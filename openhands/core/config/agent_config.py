@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from typing import Optional
 from pydantic import BaseModel, Field, ValidationError
 
+import os
+import json
 from openhands.core.config.condenser_config import CondenserConfig, NoOpCondenserConfig
 from openhands.core.config.extended_config import ExtendedConfig
 from openhands.core.logger import openhands_logger as logger
@@ -43,6 +46,47 @@ class AgentConfig(BaseModel):
     """Extended configuration for the agent."""
 
     model_config = {'extra': 'forbid'}
+    
+    # TODO: move this to load along with configs from toml
+    @staticmethod
+    def load_agent_list(agent_list_path: Optional[str] = None) -> dict:
+        """
+        Load agent list from a JSON file.
+        
+        Args:
+            agent_list_path: Optional path to the agent list JSON file. If not provided,
+                          uses the default path in openhands/core/config/agent_list.json
+            
+        Returns:
+            Dictionary containing agent list information
+        """
+        if agent_list_path is None:
+            # Use the default path in core/config
+            agent_list_path = os.path.join(os.path.dirname(__file__), 'agent_list.json')
+        try:
+            with open(agent_list_path, 'r') as f:
+                agent_list = json.load(f)
+                if not agent_list.get('local'):
+                    logger.warning("Agent list is empty or has no local agents")
+                    agent_list = {
+                        "local": {
+                            "CodeActAgent": {
+                                "agent_name": "CodeActAgent",
+                                "description": "Expert in analyzing code, fixing bugs, and diagnosing software issues."
+                            }
+                        }
+                    }
+                return agent_list
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            logger.warning(f"Error loading agent list: {e}. Using default agent (CodeActAgent)")
+            return {
+                "local": {
+                    "CodeActAgent": {
+                        "agent_name": "CodeActAgent",
+                        "description": "Expert in analyzing code, fixing bugs, and diagnosing software issues."
+                    }
+                }
+            }
 
     @classmethod
     def from_toml_section(cls, data: dict) -> dict[str, AgentConfig]:

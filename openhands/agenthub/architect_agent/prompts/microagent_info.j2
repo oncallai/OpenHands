@@ -1,0 +1,32 @@
+{% if triggered_agents %}
+# Microagent Information
+
+The following microagents have been triggered:
+
+{% for agent in triggered_agents %}
+## {{ agent.name }}
+{{ agent.description }}
+
+{% if agent.capabilities %}
+### Capabilities
+{% for capability in agent.capabilities %}
+- {{ capability }}
+{% endfor %}
+{% endif %}
+
+{% if agent.limitations %}
+### Limitations
+{% for limitation in agent.limitations %}
+- {{ limitation }}
+{% endfor %}
+{% endif %}
+
+{% if agent.examples %}
+### Examples
+{% for example in agent.examples %}
+- {{ example }}
+{% endfor %}
+{% endif %}
+
+{% endfor %}
+{% endif %}

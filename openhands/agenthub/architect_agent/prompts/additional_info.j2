@@ -1,0 +1,35 @@
+{% if repository_info and repository_info.repo_name %}
+# Repository Information
+- Repository: {{ repository_info.repo_name }}
+- Directory: {{ repository_info.repo_directory }}
+{% endif %}
+
+{% if repository_instructions %}
+# Repository Instructions
+{{ repository_instructions }}
+{% endif %}
+
+{% if runtime_info %}
+# Runtime Information
+- Current Date: {{ runtime_info.date }}
+{% if runtime_info.available_hosts %}
+- Available Hosts:
+{% for host, port in runtime_info.available_hosts.items() %}
+  - {{ host }}:{{ port }}
+{% endfor %}
+{% endif %}
+{% if runtime_info.additional_agent_instructions %}
+- Additional Instructions: {{ runtime_info.additional_agent_instructions }}
+{% endif %}
+{% if runtime_info.custom_secrets_descriptions %}
+- Custom Secrets:
+{% for key, description in runtime_info.custom_secrets_descriptions.items() %}
+  - {{ key }}: {{ description }}
+{% endfor %}
+{% endif %}
+{% endif %}
+
+{% if conversation_instructions and conversation_instructions.content %}
+# Conversation Instructions
+{{ conversation_instructions.content }}
+{% endif %}

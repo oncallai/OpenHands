@@ -1,0 +1,13 @@
+You need to select the most appropriate agent to handle the following troubleshooting step:
+
+Step Description: {{ step_description }}
+
+Incident Context: {{ incident_context }}
+
+Available Agents:
+{% for agent_name, agent_info in agent_list.items() %}
+- {{ agent_name }}: {{ agent_info.description }}
+{% endfor %}
+
+Choose the agent that is best suited to handle this particular step based on their expertise.
+Return only the name of the agent you've selected. Do not include any explanations or additional text.

@@ -104,7 +104,6 @@ class CodeActAgent(Agent):
         # For these models, we use short tool descriptions ( < 1024 tokens)
         # to avoid hitting the OpenAI token limit for tool descriptions.
         SHORT_TOOL_DESCRIPTION_LLM_SUBSTRS = ['gpt-', 'o3', 'o1', 'o4']
-
         use_short_tool_desc = False
         if self.llm is not None:
             use_short_tool_desc = any(

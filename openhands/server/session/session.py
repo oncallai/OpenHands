@@ -97,7 +97,9 @@ class Session:
             AgentStateChangedObservation('', AgentState.LOADING),
             EventSource.ENVIRONMENT,
         )
-        agent_cls = settings.agent or self.config.default_agent
+    #    agent_cls = settings.agent or self.config.default_agent
+        agent_cls = self.config.default_agent or settings.agent
+
         self.config.security.confirmation_mode = (
             self.config.security.confirmation_mode
             if settings.confirmation_mode is None
@@ -134,7 +136,9 @@ class Session:
         # TODO: override other LLM config & agent config groups (#2075)
 
         llm = self._create_llm(agent_cls)
-        agent_config = self.config.get_agent_config(agent_cls)
+        # Ensure agent_cls is not None before passing to get_agent_config
+        agent_name = agent_cls if agent_cls is not None else 'agent'
+        agent_config = self.config.get_agent_config(agent_name)
 
         if settings.enable_default_condenser:
             # Default condenser chains a condenser that limits browser the total
@@ -154,6 +158,9 @@ class Session:
             self.logger.info(f'Enabling default condenser: {default_condenser_config}')
             agent_config.condenser = default_condenser_config
 
+        # Ensure agent_cls is not None before passing to get_cls
+        if agent_cls is None:
+            agent_cls = self.config.default_agent
         agent = Agent.get_cls(agent_cls)(llm, agent_config)
 
         git_provider_tokens = None
