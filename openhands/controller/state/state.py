@@ -5,9 +5,10 @@ import os
 import pickle
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple, Type, cast
 
 import openhands
+from openhands.controller.state.incident import Incident
 from openhands.core.logger import openhands_logger as logger
 from openhands.core.schema import AgentState
 from openhands.events.action import (
@@ -103,6 +104,9 @@ class State:
     # evaluation tasks to store extra data needed to track the progress/state of the task.
     extra_data: dict[str, Any] = field(default_factory=dict)
     last_error: str = ''
+    
+    # Incident object used by the ArchitectAgent and potentially other agents
+    incident: Optional[Incident] = None
 
     def save_to_session(
         self, sid: str, file_store: FileStore, user_id: str | None

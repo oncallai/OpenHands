@@ -3,58 +3,51 @@ This module contains the ArchitectAgent class, which is responsible for analyzin
 delegating troubleshooting steps to available agents, and finding root causes of issues.
 """
 
-import os
+from __future__ import annotations
+
 import json
+import os
+import re
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from openhands.events.action import Action
-    from openhands.llm.llm import ModelResponse
+from enum import Enum
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union
 
 from litellm import ChatCompletionToolParam
-from openhands.agenthub.architect_agent.function_calling import response_to_actions
-from openhands.agenthub.architect_agent.tools import (
-    AnalyzeIncidentTool,
-    RootCauseReportTool,
-    DelegateStepTool,
-    ThinkTool
-)
+from litellm import Message as LiteLLMMessage
+import litellm
 
 from openhands.controller.agent import Agent
 from openhands.controller.state.state import State
 from openhands.core.config import AgentConfig
 from openhands.core.logger import openhands_logger as logger
-from openhands.core.message import Message, TextContent
-from openhands.memory.conversation_memory import ConversationMemory
 from openhands.events.action import (
+    Action,
     AgentDelegateAction,
     AgentFinishAction,
+    AgentFinishTaskCompleted,
     MessageAction,
 )
-from openhands.events.action.agent import AgentFinishTaskCompleted
 from openhands.events.event import Event
 from openhands.events.observation import AgentDelegateObservation, Observation
-from openhands.llm.llm import LLM
+from openhands.llm.llm import LLM, ModelResponse
 from openhands.llm.llm_utils import check_tools
-from openhands.runtime.plugins import PluginRequirement
-from openhands.utils.prompt import PromptManager
 from openhands.memory.condenser import Condenser
 from openhands.memory.condenser.condenser import Condensation, View
+from openhands.runtime.plugins import PluginRequirement
+from openhands.utils.conversation_memory import ConversationMemory
+from openhands.utils.prompt import Message, PromptManager, TextContent
 
-
-@dataclass
-class TroubleshootingStep:
-    """Represents a single troubleshooting step in the incident analysis process."""
-    
-    id: str
-    description: str
-    agent_type: str
-    delegated: bool = False
-    completed: bool = False
-    result: Optional[Dict[str, Any]] = None
+from openhands.agenthub.architect_agent.function_calling import response_to_actions
+from openhands.controller.state.incident import Incident, TroubleshootingStep
+from openhands.agenthub.architect_agent.tools import (
+    AnalyzeIncidentTool,
+    DelegateStepTool,
+    RootCauseReportTool,
+    ThinkTool,
+)
 
 
 class ArchitectAgent(Agent):
@@ -84,6 +77,7 @@ class ArchitectAgent(Agent):
         self, 
         llm: LLM, 
         config: AgentConfig,
+        analyze_incident_llm=None
     ) -> None:
         """
         Initialize the ArchitectAgent.
@@ -91,17 +85,15 @@ class ArchitectAgent(Agent):
         Args:
             llm: The language model to use for analysis
             config: The agent configuration
+            analyze_incident_llm: Optional custom LLM for incident analysis
         """
         super().__init__(llm, config)
         
         # Initialize pending actions queue
         self.pending_actions: deque['Action'] = deque()
         
-        # Initialize state variables
-        self.incident_analysis: Dict[str, Any] = {}
-        self.troubleshooting_plan: List[TroubleshootingStep] = []
-        self.delegated_tasks: Dict[str, Dict[str, Any]] = {}
-        self.root_cause: Optional[str] = None
+        # Create AnalyzeIncidentLLM tool - use litellm as default if none provided
+        self.analyze_incident_llm = analyze_incident_llm if analyze_incident_llm is not None else litellm
         
         # Reset the agent to ensure all variables are properly initialized
         self.reset()
@@ -153,32 +145,26 @@ class ArchitectAgent(Agent):
         return tools
         
     def reset(self) -> None:
-        """Reset the agent's state."""
-        super().reset()
-        self.incident_analysis = {}
-        self.troubleshooting_plan = []
-        self.delegated_tasks = {}
-        self.root_cause = None
+        """Reset the agent state."""
+        # Clear pending actions
         self.pending_actions.clear()
         logger.debug("ArchitectAgent state reset")
     
     def step(self, state: State) -> 'Action':
         """
-        Perform one step of the architect agent's workflow.
-        
-        This method is called by the controller to get the next action from the agent.
-        The agent's behavior depends on its current state in the workflow:
-        1. If no incident analysis exists, analyze the incident
-        2. If there are undelegated steps, delegate the next step
-        3. If all steps are delegated and completed, create a root cause report
-        4. Otherwise, wait for delegated tasks to complete
+        Process the current state and return the next action.
         
         Args:
-            state: The current state containing events and other information
+            state: The current state of the conversation
             
         Returns:
-            An Action for the controller to execute
+            The next action to take
         """
+        # Initialize the incident in the state if it doesn't exist
+        if state.incident is None:
+            state.incident = Incident()
+            logger.info("Initialized new incident in state")
+            
         # Determine the current state for better logging and traceability
         current_state = "initializing"
         
@@ -189,102 +175,147 @@ class ArchitectAgent(Agent):
             return self.pending_actions.popleft()
             
         # Check for exit command
-        latest_user_message = state.get_last_user_message()
-        if latest_user_message and latest_user_message.content.strip() == '/exit':
+        if self._check_for_exit_command(state.history):
             current_state = "exiting"
             logger.info(f"ArchitectAgent state: {current_state} - User requested exit")
-            return AgentFinishAction()
-            
-        # Use condenser to manage event history
-        current_state = "condensing_history"
+            return AgentFinishAction(
+                task_completed=AgentFinishTaskCompleted.TRUE,
+                final_thought="The user has requested to exit, so I am terminating the session."
+            )
+        
+        # Process the state history to extract relevant events
+        condensed_history = state.history
+        
+        # Check if we have received any observations from delegated tasks
+        current_state = "processing_delegate_observations"
         logger.info(f"ArchitectAgent state: {current_state} - Processing event history")
-        condensed_history: list[Event] = []
-        match self.condenser.condensed_history(state):
-            case View(events=events):
-                condensed_history = events
-                
-            case Condensation(action=condensation_action):
-                logger.info(f"ArchitectAgent state: condensation_action - Returning condensation action")
-                return condensation_action
-                
-        logger.debug(
-            f'Processing {len(condensed_history)} events from a total of {len(state.history)} events'
-        )
-            
-        # Process any delegate observations
-        self._process_delegate_observations(condensed_history)
+        self._process_delegate_observations(state, condensed_history)
         
-        # Get the initial user message
-        initial_user_message = self._get_initial_user_message(state.history)
-        
-        # If we haven't analyzed the incident yet, do that first
-        if not self.incident_analysis:
+        # FIRST CASE: New iteration - analyze incident
+        if state.incident is None or not state.incident.analysis or state.local_iteration == 0:
             current_state = "analyzing_incident"
-            logger.info(f"ArchitectAgent state: {current_state} - Analyzing incident")
-            action = self._analyze_incident(condensed_history)
-            if action:
-                self.pending_actions.append(action)
-                return self.pending_actions.popleft()
+            logger.info(f"ArchitectAgent state: {current_state} - Analyzing incident (iteration {state.local_iteration + 1})")
+            return self._analyze_incident(state, condensed_history)
         
-        # If there are undelegated steps, delegate the next one
-        next_step = self._get_next_undelegated_step()
-        if next_step:
-            current_state = "delegating_step"
-            logger.info(f"ArchitectAgent state: {current_state} - Delegating step {next_step.id}: {next_step.description}")
-            action = self._delegate_step(next_step)
-            if action:
-                self.pending_actions.append(action)
-                return self.pending_actions.popleft()
+        # SECOND CASE: Check if all steps in the current plan are completed
+        if state.incident is not None and state.incident.all_steps_completed():
+            # If we have a root cause, finish
+            if state.incident is not None and state.incident.root_cause:
+                current_state = "creating_root_cause_report"
+                logger.info(f"ArchitectAgent state: {current_state} - Creating root cause report")
+                return self._create_root_cause_report(state)
+            
+            # Check if we've reached max iterations
+            if state.local_iteration >= state.max_iterations - 1:
+                logger.info(f"Reached maximum iterations ({state.local_iteration + 1}). Creating final report.")
+                return self._create_final_report(state)
+            
+            # Otherwise, save current iteration data and start new iteration
+            logger.info(f"Completed iteration {state.local_iteration + 1} without finding root cause. Starting new iteration.")
+            if state.incident is not None:
+                state.incident.save_iteration_data()
+                state.incident.analysis = {}  # Reset for next iteration
+                state.incident.troubleshooting_plan = []  # Reset for next iteration
+                state.incident.delegated_tasks = {}  # Reset delegated tasks
+            
+            # Start new analysis with previous iteration knowledge
+            current_state = "analyzing_incident"
+            logger.info(f"ArchitectAgent state: {current_state} - Starting new analysis (iteration {state.local_iteration + 1})")
+            return self._analyze_incident(state, condensed_history)
         
-        # If we've received results from all delegated tasks, analyze them and create a root cause report
-        if self._all_steps_completed() and not self.root_cause:
-            current_state = "creating_report"
-            logger.info(f"ArchitectAgent state: {current_state} - Creating root cause report")
-            action = self._create_root_cause_report()
-            if action:
-                self.pending_actions.append(action)
-                return self.pending_actions.popleft()
-        
-        # Otherwise, wait for more information
-        current_state = "waiting_for_results"
-        completed_count = sum(1 for step in self.troubleshooting_plan if step.completed)
-        total_count = len(self.troubleshooting_plan)
+        # THIRD CASE: Continue with current plan - delegate next step
+        if state.incident is not None and state.incident.troubleshooting_plan:
+            # Find the next step that hasn't been delegated yet
+            next_step = state.incident.get_next_pending_step()
+            
+            if next_step:
+                current_state = "delegating_step"
+                logger.info(f"ArchitectAgent state: {current_state} - Delegating step {next_step.id}")
+                
+                # Get the agent name for delegation - at this point, we're guaranteed to have a valid agent name
+                # since we validate in _parse_json_plan
+                agent_name = next_step.agent_name
+                logger.info(f"Using agent {agent_name} for step {next_step.id} as specified in the plan")
+                
+                # Mark the step as delegated in the incident object
+                state.incident.delegate_step(next_step.id, agent_name)
+                
+                # Create inputs for the delegate agent
+                inputs = {
+                    "task": next_step.description,
+                    "context": state.incident.get_summary(),
+                    "task_id": next_step.id,
+                    "incident_summary": state.incident.get_summary(),
+                }
+                
+                # Log the delegation
+                logger.info(f"Delegating step {next_step.id} to {agent_name}: {next_step.description}")
+                
+                # Return a delegate action directly from the step method
+                return AgentDelegateAction(
+                    agent=agent_name,
+                    inputs=inputs,
+                    thought=f"Delegating step {next_step.id}: {next_step.description} to {agent_name} agent."
+                )
+            else:
+                # All steps are delegated but not all completed, wait for results
+                current_state = "waiting_for_results"
+                logger.info(f"ArchitectAgent state: {current_state} - Waiting for delegated tasks to complete")
+                
+                # Ensure state.incident is not None before calling format_troubleshooting_plan
+                plan_text = ""
+                if state.incident is not None:
+                    plan_text = state.incident.format_troubleshooting_plan()
+                
+                return MessageAction(
+                    content=f"I'm waiting for the results of the following delegated troubleshooting steps:\n\n{plan_text}"
+                )
+        completed_count = 0
+        total_count = 0
+        if state.incident is not None:
+            completed_count = sum(1 for step in state.incident.troubleshooting_plan if step.completed)
+            total_count = len(state.incident.troubleshooting_plan)
         logger.info(f"ArchitectAgent state: {current_state} - Waiting for delegated tasks to complete ({completed_count}/{total_count})")
         
-        
-        message = MessageAction(
+        # Return a message to the user with the current status
+        return MessageAction(
             content=f"I'm waiting for the results of the delegated troubleshooting steps... ({completed_count}/{total_count} completed)"
         )
-        # Set the source attribute after creation
-        setattr(message, '_source', 'agent')
-        return message
     
-    def _process_delegate_observations(self, events: List[Event]) -> None:
+    def _process_delegate_observations(self, state: State, events: List[Event]) -> None:
         """
-        Process observations from delegated agents to update our internal state.
+        Process observations from delegated agent tasks.
+        
+        This method looks for AgentDelegateObservation events and updates the
+        corresponding steps in the troubleshooting plan with the results.
         
         Args:
-            events: The list of events to process
+            state: The current state of the conversation
+            events: List of events to process
         """
+        if state.incident is None:
+            logger.warning("No incident object found in state")
+            return
+            
         for event in events:
             if isinstance(event, AgentDelegateObservation):
-                # Check if this observation is for one of our delegated tasks
-                # The task_id should be in the outputs dictionary
-                task_id = event.outputs.get('task_id')
-                if task_id and task_id in self.delegated_tasks:
+                # The task ID would be in the outputs, not inputs (which doesn't exist)
+                # Try to find the task_id in the outputs
+                task_id = None
+                if hasattr(event, 'outputs') and isinstance(event.outputs, dict):
+                    task_id = event.outputs.get('task_id')
+                
+                if task_id:
                     logger.info(f"Received observation for delegated task {task_id}")
                     
-                    # Update the task status
-                    self.delegated_tasks[task_id]['completed'] = True
-                    self.delegated_tasks[task_id]['result'] = event.outputs
+                    # Get the step result from the observation outputs and ensure it's a string
+                    result_value = event.outputs if event.outputs else "No results provided"
+                    result_str = str(result_value) if not isinstance(result_value, str) else result_value
                     
-                    # Update the corresponding step in the troubleshooting plan
-                    for step in self.troubleshooting_plan:
-                        if step.id == task_id:
-                            step.completed = True
-                            step.result = event.outputs
-                            logger.debug(f"Updated step {step.id} as completed with result: {event.outputs}")
-                            break
+                    # Update the step in the incident object
+                    if state.incident is not None:
+                        state.incident.complete_step(task_id, result_str)
+                        logger.debug(f"Updated step {task_id} as completed with result: {result_str}")
     
     def _get_messages(self, events: list[Event], initial_user_message: MessageAction) -> list[Message]:
         """
@@ -316,11 +347,12 @@ class ArchitectAgent(Agent):
 
         return messages
         
-    def _analyze_incident(self, events: List[Event]) -> 'Action':
+    def _analyze_incident(self, state: State, events: List[Event]) -> 'Action':
         """
         Analyze the incident based on user messages and create a troubleshooting plan.
         
         Args:
+            state: The current state of the conversation
             events: The list of events to analyze
             
         Returns:
@@ -328,15 +360,51 @@ class ArchitectAgent(Agent):
         """
         # Extract the incident description from user messages
         incident_description = self._extract_incident_description(events)
-        logger.debug(f"Extracted incident description: {incident_description[:100]}...")
+        # Safely truncate incident description
+        if incident_description:
+            logger.debug(f"Extracted incident description: {incident_description[:100]}...")
+        else:
+            logger.debug("No incident description extracted")
         
-        # Get the initial user message
-        initial_user_message = self._get_initial_user_message(events)
+        # Get the available agents for delegation
+        available_agents = self.agent_list.get("local", {})
+        if not available_agents:
+            logger.warning("No local agents available, will use default agents")
+            available_agents = {"CodeActAgent": "Handles code-related tasks and command execution"}
         
-        # Get messages using our standard message construction
-        messages = self._get_messages(events, initial_user_message)
+        # Get agent names for the template
+        agent_names = list(available_agents.keys())
         
-        logger.debug("Sending incident to LLM for analysis")
+        # Use the prompt manager to get the message from the template
+        if self._prompt_manager is None:
+            raise ValueError("Prompt manager is not initialized")
+        
+        # Prepare template variables including previous iterations data
+        template_vars = {
+            "incident_description": incident_description,
+            "available_agents": available_agents,
+            "agent_names": agent_names,
+            "current_iteration": state.local_iteration,
+            "previous_iterations": state.incident.get_previous_iterations_summary() if state.incident is not None else "No previous iterations."
+        }
+        
+        # Get the system message from the prompt manager
+        system_prompt = self._prompt_manager.get_system_message()
+        
+        # Get the user message from the template
+        user_prompt = self._prompt_manager.render_prompt("incident_analysis.j2", template_vars)
+        messages = [
+            Message(
+                role="system",
+                content=[TextContent(text=system_prompt)]
+            ),
+            Message(
+                role="user",
+                content=[TextContent(text=user_prompt)]
+            )
+        ]
+        
+        logger.debug("Sending incident to LLM for analysis with JSON structured output")
         
         try:
             # Use the centralized LLM interaction method
@@ -355,87 +423,159 @@ class ArchitectAgent(Agent):
             setattr(message, '_source', 'agent')
             return message
         
-        # Parse the response to extract the analysis and troubleshooting steps
-        self.incident_analysis = self._parse_incident_analysis(response_content)
-        self.troubleshooting_plan = self._parse_troubleshooting_plan(response_content)
+        # Parse the JSON response to extract structured plan
+        analysis, steps = self._parse_json_plan(response_content, available_agents)
+        
+        # Update the incident object - ensure incident is not None before proceeding
+        if state.incident is None:
+            state.incident = Incident()
+            logger.info("Created new incident in state during analysis")
+            
+        state.incident.set_analysis(analysis)
+        state.incident.set_troubleshooting_plan(steps)
         
         # Log detailed information about the troubleshooting plan
-        logger.info(f"Created incident analysis with {len(self.troubleshooting_plan)} troubleshooting steps")
-        for step in self.troubleshooting_plan:
-            logger.info(f"Step {step.id}: {step.description[:100]}... (Agent: {step.agent_type})")
+        logger.info(f"Created incident analysis with {len(state.incident.troubleshooting_plan)} troubleshooting steps")
+        for step in state.incident.troubleshooting_plan:
+            logger.info(f"Step {step.id}: {step.description[:100]}... (Agent: {step.agent_name})")
         
         # Log the incident analysis summary
-        if 'summary' in self.incident_analysis:
-            logger.info(f"Incident analysis summary: {self.incident_analysis['summary'][:150]}...")
+        summary = state.incident.get_summary()
+        # Safely log the summary with proper handling of potential None value
+        if summary:
+            logger.info(f"Incident analysis summary: {summary[:150]}...")
+        else:
+            logger.info("No incident analysis summary available")
         
         # Return a message explaining the analysis and plan
-        plan_text = self._format_troubleshooting_plan()
+        plan_text = state.incident.format_troubleshooting_plan()
         # Create the message action without the source parameter
         message = MessageAction(
-            content=f"I've analyzed the incident. Here's my understanding:\n\n{self.incident_analysis.get('summary', '')}\n\n"
+            content=f"I've analyzed the incident. Here's my understanding:\n\n{summary}\n\n"
                     f"I'll now coordinate the following troubleshooting steps:\n\n{plan_text}"
         )
         # Set the source attribute after creation
         setattr(message, '_source', 'agent')
         return message
     
-    def _delegate_step(self, step: TroubleshootingStep) -> 'Action':
+    # The _delegate_step method has been removed as delegation is now handled directly in the step method
+    
+    def _create_final_report(self, state: State) -> 'Action':
         """
-        Delegate a troubleshooting step to an appropriate agent.
+        Create a final report after reaching maximum iterations without finding a root cause.
         
         Args:
-            step: The step to delegate
+            state: The current state of the conversation
             
         Returns:
-            An AgentDelegateAction to delegate the step
+            An AgentFinishAction with the final report
         """
-        # Mark the step as delegated
-        step.delegated = True
+        # Ensure state.incident is not None before proceeding
+        if state.incident is None:
+            state.incident = Incident()
+            logger.info("Created new incident in state during final report generation")
+            
+        # Get all iteration data
+        iterations_summary = state.incident.get_previous_iterations_summary()
         
-        # Create inputs for the delegate agent
-        inputs = {
-            "task": step.description,
-            "context": self.incident_analysis.get('summary', ''),
-            "task_id": step.id  # Include the task ID so we can track it
-        }
+        # Save the current iteration data before creating the report
+        state.incident.save_iteration_data()
         
-        # Track this delegation in our internal state
-        self.delegated_tasks[step.id] = {
-            'step': {
-                'id': step.id,
-                'description': step.description,
-                'agent_type': step.agent_type
-            },
-            'delegated_at': time.time(),
-            'completed': False,
-            'result': None
-        }
+        # Compile results from all iterations
+        all_results = []
+        for i, plan in enumerate(state.incident.iteration_plans):
+            iteration_results = []
+            for step in plan:
+                if step.completed:
+                    iteration_results.append({
+                        'step_id': step.id,
+                        'description': step.description,
+                        'result': step.result
+                    })
+            if iteration_results:
+                all_results.extend(iteration_results)
         
-        logger.info(f"Delegating step {step.id} to {step.agent_type}: {step.description}")
+        # Create a synthesized conclusion based on all findings
+        system_message = "You are an AI architect analyzing incidents and finding patterns in troubleshooting results."
+        if self._prompt_manager is not None:
+            system_message = self._prompt_manager.get_system_message()
+            
+        # Format results for the LLM
+        results_text = "\n\n".join([
+            f"Step {r['step_id']}: {r['description']}\nResult: {r['result']}"
+            for r in all_results
+        ])
         
-        # Return a delegate action
-        return AgentDelegateAction(
-            agent=step.agent_type,
-            inputs=inputs,
-            thought=f"Delegating step {step.id}: {step.description} to {step.agent_type} agent."
+        messages = [
+            Message(
+                role="system",
+                content=[TextContent(text=system_message)]
+            ),
+            Message(
+                role="user",
+                content=[TextContent(text=f"After {state.local_iteration} iterations, we could not determine a definitive root cause. Synthesize a conclusion from all the information gathered:\n\nIncident Summary: {state.incident.get_summary()}\n\nAll Troubleshooting Results:\n{results_text}")]
+            )
+        ]
+        
+        try:
+            # Use the centralized LLM interaction method
+            response = self._call_llm(messages)
+            logger.debug(f"Received response from LLM: {response}")
+            
+            # Extract the conclusion from the response
+            conclusion = ""
+            if hasattr(response, 'choices') and response.choices and hasattr(response.choices[0], 'message'):
+                conclusion = response.choices[0].message.content
+            else:
+                conclusion = str(response)
+                
+            # Set the conclusion as the root cause in the incident object
+            state.incident.set_root_cause(conclusion)
+        except Exception as e:
+            logger.error(f"Error during final report generation: {e}")
+            # Provide a fallback conclusion
+            fallback_conclusion = f"After {state.local_iteration} iterations, we could not determine a definitive root cause due to an error: {str(e)}\n\n" \
+                          f"Based on all the troubleshooting steps, here's what we know: \n" \
+                          f"{results_text}"
+            state.incident.set_root_cause(fallback_conclusion)
+        
+        # Return a finish action with the final report
+        return AgentFinishAction(
+            final_thought=f"After {state.local_iteration} iterations, here is my conclusion:\n\n{state.incident.root_cause}",
+            task_completed=AgentFinishTaskCompleted.TRUE,
+            outputs={
+                "conclusion": state.incident.root_cause, 
+                "troubleshooting_results": all_results,
+                "iterations_summary": iterations_summary
+            }
         )
     
-    def _create_root_cause_report(self) -> 'Action':
+    def _create_root_cause_report(self, state: State) -> 'Action':
         """
         Analyze the results of all troubleshooting steps and create a root cause report.
         
+        Args:
+            state: The current state of the conversation
+            
         Returns:
             An AgentFinishAction with the root cause report
         """
-        # Collect all the results from the delegated tasks
+        # Ensure state.incident is not None before proceeding
+        if state.incident is None:
+            state.incident = Incident()
+            logger.info("Created new incident in state during root cause report generation")
+            
+        # Get completed steps from the incident object
+        completed_steps = state.incident.get_completed_steps()
+        
+        # Collect all the results from the completed steps
         results = []
-        for step in self.troubleshooting_plan:
-            if step.completed and step.result:
-                results.append({
-                    'step_id': step.id,
-                    'description': step.description,
-                    'result': step.result
-                })
+        for step in completed_steps:
+            results.append({
+                'step_id': step.id,
+                'description': step.description,
+                'result': step.result
+            })
         
         # Format the results for the LLM
         results_text = "\n\n".join([
@@ -444,9 +584,6 @@ class ArchitectAgent(Agent):
         ])
         
         logger.debug(f"Sending troubleshooting results to LLM for root cause analysis: {len(results)} results")
-        
-        # In this context, we don't need the initial user message since we're not using _get_messages
-        # We're directly creating the messages using prompt_manager.get_message
         
         # Create messages directly
         system_message = "You are an AI architect analyzing incidents and finding root causes."
@@ -460,7 +597,7 @@ class ArchitectAgent(Agent):
             ),
             Message(
                 role="user",
-                content=[TextContent(text=f"Create a root cause analysis based on the following information:\n\nIncident Summary: {self.incident_analysis.get('summary', '')}\n\nTroubleshooting Results:\n{results_text}")]
+                content=[TextContent(text=f"Create a root cause analysis based on the following information:\n\nIncident Summary: {state.incident.get_summary()}\n\nTroubleshooting Results:\n{results_text}")]
             )
         ]
         
@@ -470,48 +607,70 @@ class ArchitectAgent(Agent):
             logger.debug(f"Received response from LLM: {response}")
             
             # Extract the root cause from the response
+            root_cause = ""
             if hasattr(response, 'choices') and response.choices and hasattr(response.choices[0], 'message'):
-                self.root_cause = self._parse_root_cause(response.choices[0].message.content)
+                root_cause = self._parse_root_cause(response.choices[0].message.content)
             else:
-                self.root_cause = self._parse_root_cause(str(response))
+                root_cause = self._parse_root_cause(str(response))
+                
+            # Set the root cause in the incident object
+            state.incident.set_root_cause(root_cause)
         except Exception as e:
             logger.error(f"Error during root cause analysis: {e}")
             # Provide a fallback root cause report
-            self.root_cause = f"Unable to generate a complete root cause analysis due to an error: {str(e)}\n\n" \
-                        f"Based on the completed steps, here's what we know: \n" \
-                        f"{results_text}"
+            fallback_report = f"Unable to generate a complete root cause analysis due to an error: {str(e)}\n\n" \
+                          f"Based on the completed steps, here's what we know: \n" \
+                          f"{results_text}"
+            state.incident.set_root_cause(fallback_report)
         
         # Log detailed information about the root cause and contributing steps
-        logger.info(f"Determined root cause: {self.root_cause[:100]}...")
+        if state.incident.root_cause is not None:
+            logger.info(f"Determined root cause: {state.incident.root_cause[:100]}...")
+        else:
+            logger.info("No root cause was determined.")
         
         # Log the completed troubleshooting steps that contributed to the root cause
-        completed_steps = [step for step in self.troubleshooting_plan if step.completed]
-        logger.info(f"Root cause determination based on {len(completed_steps)}/{len(self.troubleshooting_plan)} completed steps")
+        logger.info(f"Root cause determination based on {len(completed_steps)}/{len(state.incident.troubleshooting_plan)} completed steps")
         
         for step in completed_steps:
-            logger.info(f"Contributing step {step.id}: {step.description[:80]}... Result: {str(step.result)[:100]}...")
+            # Safely truncate strings that might be None
+            desc = step.description or ""
+            result = str(step.result) if step.result is not None else ""
+            
+            logger.info(f"Contributing step {step.id}: {desc[:80]}... Result: {result[:100]}...")
+        
+        # Save the current iteration data before creating the report
+        state.incident.save_iteration_data()
+        
+        # Get the iteration summary for the outputs
+        iterations_summary = state.incident.get_previous_iterations_summary()
         
         # Return a finish action with the root cause report
         return AgentFinishAction(
-            final_thought=f"I've analyzed all the troubleshooting results and determined the root cause of the incident:\n\n{self.root_cause}",
+            final_thought=f"After {state.local_iteration + 1} iterations, I've analyzed all the troubleshooting results and determined the root cause of the incident:\n\n{state.incident.root_cause}",
             task_completed=AgentFinishTaskCompleted.TRUE,
-            outputs={"root_cause": self.root_cause, "troubleshooting_results": results}
+            outputs={
+                "root_cause": state.incident.root_cause, 
+                "troubleshooting_results": results,
+                "iterations_summary": iterations_summary
+            }
         )
     
     def _extract_incident_description(self, events: List[Event]) -> str:
         """
-        Extract the incident description from user messages.
+        Extract the incident description from the event history.
         
         Args:
-            events: The list of events to extract from
+            events: The list of events to extract the description from
             
         Returns:
-            The incident description as a string
+            The incident description
         """
         # Find the most recent user message
         for event in reversed(events):
-            if isinstance(event, MessageAction) and event.source == "user":
-                return event.content
+            # Check if it's a MessageAction with source='user'
+            if isinstance(event, MessageAction) and getattr(event, 'source', None) == 'user':
+                return event.content if hasattr(event, 'content') else ""
         return "No incident description found."
     
     def _parse_incident_analysis(self, content: str) -> Dict[str, Any]:
@@ -535,6 +694,76 @@ class ArchitectAgent(Agent):
             "summary": summary,
             "raw_analysis": content
         }
+    
+    def _parse_json_plan(self, content: str, available_agents: Dict[str, str]) -> Tuple[Dict[str, Any], List[TroubleshootingStep]]:
+        """
+        Parse the LLM response to extract a JSON-structured incident analysis and plan.
+        
+        Args:
+            content: The LLM response content containing JSON
+            available_agents: Dictionary of available agents
+            
+        Returns:
+            A tuple containing (analysis_dict, troubleshooting_steps)
+        """
+        # Extract JSON content from the LLM response
+        json_content = ""
+        json_blocks = re.findall(r'```(?:json)?\s*(.+?)\s*```', content, re.DOTALL)
+        
+        if json_blocks:
+            json_content = json_blocks[0]
+        else:
+            # Try to find JSON without markdown code blocks
+            match = re.search(r'(\{\s*"analysis"\s*:.+?\}\s*$)', content, re.DOTALL)
+            if match:
+                json_content = match.group(1)
+            else:
+                # Fallback to using the whole content
+                json_content = content
+        
+        try:
+            # Parse the JSON content
+            data = json.loads(json_content)
+            
+            # Extract analysis
+            analysis = {
+                "summary": data.get("analysis", "No analysis provided"),
+                "raw_analysis": content
+            }
+            
+            # Extract troubleshooting steps
+            steps = []
+            plan_data = data.get("troubleshootingPlan", [])
+            
+            for i, step_data in enumerate(plan_data):
+                step_id = step_data.get("id", str(i+1))
+                description = step_data.get("description", f"Step {i+1}")
+                
+                # Ensure agent_name is present and valid
+                if "agentName" not in step_data:
+                    raise ValueError(f"Missing required 'agentName' for step {step_id}")
+                    
+                agent_name = step_data["agentName"]
+                
+                # Validate agent name against available agents
+                if not agent_name or agent_name not in available_agents:
+                    raise ValueError(f"Invalid agent name '{agent_name}' for step {step_id}. Must be one of: {list(available_agents.keys())}")
+                
+                # Create the troubleshooting step
+                steps.append(TroubleshootingStep(
+                    id=step_id,
+                    description=description,
+                    agent_name=agent_name
+                ))
+            
+            return analysis, steps
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON plan: {e}")
+            # Fallback to regular parsing methods
+            analysis = self._parse_incident_analysis(content)
+            steps = self._parse_troubleshooting_plan(content)
+            return analysis, steps
     
     def _parse_troubleshooting_plan(self, content: str) -> List[TroubleshootingStep]:
         """
@@ -565,14 +794,13 @@ class ArchitectAgent(Agent):
                 step_count += 1
                 description = line.split(".", 1)[1].strip() if "." in line else line.split(")", 1)[1].strip()
                 
-                # Select the appropriate agent using LLM
-                incident_context = self.incident_analysis.get('summary', '')
-                agent_type = self._select_agent_for_task(description, incident_context)
+                # Don't select agent here, let the delegate_step method handle it
+                agent_name = "CodeActAgent"  # Default agent
                 
                 steps.append(TroubleshootingStep(
                     id=str(step_count),
                     description=description,
-                    agent_type=agent_type
+                    agent_name=agent_name
                 ))
         
         # If we couldn't find steps with the above method, try a different approach
@@ -581,13 +809,12 @@ class ArchitectAgent(Agent):
             paragraphs = content.split("\n\n")
             for i, paragraph in enumerate(paragraphs):
                 if "step" in paragraph.lower() or "check" in paragraph.lower():
-                    # Select agent type using LLM
-                    incident_context = "System incident requiring troubleshooting."
-                    agent_type = self._select_agent_for_task(paragraph, incident_context)
+                    # Don't select agent here, let the delegate_step method handle it
+                    agent_name = "CodeActAgent"  # Default agent
                     steps.append(TroubleshootingStep(
                         id=str(i + 1),
                         description=paragraph,
-                        agent_type=agent_type
+                        agent_name=agent_name
                     ))
         
         # If we still don't have steps, create some generic ones based on the content
@@ -598,74 +825,16 @@ class ArchitectAgent(Agent):
                 "Examine recent changes that might have caused the issue"
             ]
             
-            # Get a brief context for better agent selection
-            incident_context = "System incident requiring troubleshooting. No specific details available."
-            
             steps = []
             for i, description in enumerate(default_steps):
-                agent_type = self._select_agent_for_task(description, incident_context)
+                # Use a default agent name
                 steps.append(TroubleshootingStep(
                     id=str(i+1),
                     description=description,
-                    agent_type=agent_type
+                    agent_name="CodeActAgent"  # Default agent
                 ))
         
         return steps
-    
-    def _select_agent_for_task(self, step_description: str, incident_context: str = "") -> str:
-        """
-        Use the LLM to select the most appropriate agent for a troubleshooting step.
-        
-        Args:
-            step_description: The description of the troubleshooting step
-            incident_context: Optional context about the incident for better agent selection
-            
-        Returns:
-            The name of the selected agent
-        """
-        try:
-            # Only use local agents for now
-            local_agents = self.agent_list.get("local", {})
-            
-            if not local_agents:
-                logger.warning("No local agents available for selection, defaulting to CodeActAgent")
-                return "CodeActAgent"
-            
-            # Create messages directly
-            messages = [
-                Message(
-                    role="system",
-                    content=[TextContent(text="You are a task router that selects the most appropriate agent for a given task based on the agent's expertise.")]
-                ),
-                Message(
-                    role="user",
-                    content=[TextContent(text=f"Select the most appropriate agent for the following task:\n\nStep Description: {step_description}\n\nIncident Context: {incident_context}\n\nAvailable Agents: {json.dumps(local_agents, indent=2)}\n\nRespond with ONLY the agent name, nothing else.")]
-                )
-            ]
-            
-            try:
-                # Use the centralized LLM interaction method
-                response = self._call_llm(messages)
-                
-                # Extract agent name from response
-                agent_name = response.content.strip() if response.content else ""
-            except Exception as e:
-                logger.error(f"Error selecting agent for task: {e}")
-                # Default to CodeActAgent on error
-                logger.warning(f"Error during agent selection, defaulting to CodeActAgent: {e}")
-                return "CodeActAgent"
-            
-            # Validate agent name
-            if agent_name in local_agents:
-                logger.info(f"LLM selected agent {agent_name} for task: {step_description[:50]}...")
-                return agent_name
-            else:
-                logger.warning(f"LLM selected invalid agent '{agent_name}', defaulting to CodeActAgent")
-                return "CodeActAgent"
-                
-        except Exception as e:
-            logger.error(f"Error selecting agent: {e}. Defaulting to CodeActAgent")
-            return "CodeActAgent"
     
     def _parse_root_cause(self, content: str) -> str:
         """
@@ -700,48 +869,65 @@ class ArchitectAgent(Agent):
             )
         return initial_user_message
     
-    def _get_next_undelegated_step(self) -> Optional[TroubleshootingStep]:
+    def _get_next_undelegated_step(self, state: State) -> Optional[TroubleshootingStep]:
         """
         Get the next step that hasn't been delegated yet.
         
+        Args:
+            state: The current state of the conversation
+            
         Returns:
             The next undelegated step, or None if all steps are delegated
         """
-        for step in self.troubleshooting_plan:
+        if state.incident is None:
+            return None
+            
+        for step in state.incident.troubleshooting_plan:
             if not step.delegated:
                 return step
         return None
     
-    def _all_steps_completed(self) -> bool:
+    def _all_steps_completed(self, state: State) -> bool:
         """
         Check if all steps in the troubleshooting plan have been completed.
         
+        Args:
+            state: The current state of the conversation
+            
         Returns:
             True if all delegated steps are completed, False otherwise
         """
+        # Check if incident exists
+        if state.incident is None:
+            return False
+            
         # Check if there are any steps and if all delegated steps are completed
         return (
-            len(self.troubleshooting_plan) > 0 and
-            all(step.completed for step in self.troubleshooting_plan if step.delegated)
+            len(state.incident.troubleshooting_plan) > 0 and
+            all(step.completed for step in state.incident.troubleshooting_plan if step.delegated)
         )
-    
-    def _format_troubleshooting_plan(self) -> str:
-        """
-        Format the troubleshooting plan for display.
         
-        Returns:
-            A formatted string representation of the plan
+    # The _select_agent_for_task method has been removed as we now use agent names directly from the JSON plan
+    
+    def _check_for_exit_command(self, events: List[Event]) -> bool:
         """
-        result = ""
-        for step in self.troubleshooting_plan:
-            status = ""
-            if step.completed:
-                status = " [COMPLETED]"
-            elif step.delegated:
-                status = " [DELEGATED]"
+        Check if the user has requested to exit the session.
+        
+        Args:
+            events: List of events to check
             
-            result += f"{step.id}. {step.description}{status}\n"
-        return result
+        Returns:
+            True if the user has requested to exit, False otherwise
+        """
+        for event in events:
+            # Check if it's a MessageAction with source='user'
+            if isinstance(event, MessageAction) and getattr(event, 'source', None) == 'user':
+                message = event.content.strip() if hasattr(event, 'content') else ''
+                if message.lower() == '/exit':
+                    return True
+        return False
+    
+    # Second _get_initial_user_message method removed - already defined above
         
     def _call_llm(self, messages: List[Message], metadata: Optional[Dict[str, Any]] = None) -> 'ModelResponse':
         """
