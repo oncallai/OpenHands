@@ -1,5 +1,8 @@
 You need to select the most appropriate agent to handle the following troubleshooting step:
 
+You are using the delegate_step tool to assign a troubleshooting step to the appropriate agent.
+
+Step ID: {{ step_id }}
 Step Description: {{ step_description }}
 
 Incident Context: {{ incident_context }}
@@ -9,5 +12,10 @@ Available Agents:
 - {{ agent_name }}: {{ agent_info.description }}
 {% endfor %}
 
-Choose the agent that is best suited to handle this particular step based on their expertise.
-Return only the name of the agent you've selected. Do not include any explanations or additional text.
+Evaluate which agent is best suited to handle this specific step based on their capabilities and the requirements of the step.
+
+When using the delegate_step tool, make sure to include:
+1. The step_id (required)
+2. A detailed description of what the agent should do
+3. The name of the agent you're delegating to (agent_type)
+4. Any additional context that will help the agent successfully complete the step

@@ -1,4 +1,7 @@
 {% if repository_info and repository_info.repo_name %}
+# Additional Context for Analysis
+
+{% if repository_info %}
 # Repository Information
 - Repository: {{ repository_info.repo_name }}
 - Directory: {{ repository_info.repo_directory }}
@@ -28,6 +31,12 @@
 {% endfor %}
 {% endif %}
 {% endif %}
+
+# Tool Usage Guidelines
+- Use the analyze_incident tool to create a structured analysis and troubleshooting plan
+- Use the delegate_step tool to assign steps to appropriate agents
+- Use the think tool when you need to reason through complex problems
+- Use the create_root_cause_report tool when all steps are complete
 
 {% if conversation_instructions and conversation_instructions.content %}
 # Conversation Instructions

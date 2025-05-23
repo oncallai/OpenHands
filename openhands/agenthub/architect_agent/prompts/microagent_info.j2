@@ -1,9 +1,9 @@
 {% if triggered_agents %}
-# Microagent Information
+# Available Agents for Delegation
 
-The following microagents have been triggered:
+When using the delegate_step tool, you can assign tasks to the following agents:
 
-{% for agent in triggered_agents %}
+{% for agent in available_agents %}
 ## {{ agent.name }}
 {{ agent.description }}
 
@@ -22,11 +22,17 @@ The following microagents have been triggered:
 {% endif %}
 
 {% if agent.examples %}
-### Examples
+### Example Tasks
 {% for example in agent.examples %}
 - {{ example }}
 {% endfor %}
 {% endif %}
 
 {% endfor %}
+
+# Agent Selection Guidelines
+- Choose the agent with the most relevant expertise for each task
+- Consider both the agent's capabilities and limitations
+- Provide clear instructions when delegating tasks
+- Include all necessary context for the agent to complete the task
 {% endif %}
