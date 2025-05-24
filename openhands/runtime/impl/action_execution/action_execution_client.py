@@ -404,7 +404,8 @@ class ActionExecutionClient(Runtime):
             if response.status_code != 200:
                 self.log('warning', f'Failed to update MCP server: {response.text}')
             else:
-                if result['router_error_log']:
+                # Check if router_error_log exists in the result
+                if result.get('router_error_log'):
                     self.log(
                         'warning',
                         f'Some MCP servers failed to be added: {result["router_error_log"]}',
