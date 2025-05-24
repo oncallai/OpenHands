@@ -19,7 +19,7 @@ from openhands.controller.state.incident import Incident, TroubleshootingStep
 from openhands.controller.state.state import State
 from openhands.core.config import AgentConfig
 from openhands.core.logger import openhands_logger as logger
-from openhands.core.prompting import check_tools
+from openhands.llm.llm_utils import check_tools
 from openhands.events.action import (
     Action,
     AgentDelegateAction,
@@ -32,7 +32,7 @@ from openhands.events.observation import AgentDelegateObservation
 from openhands.llm.llm import LLM, ModelResponse
 from openhands.memory.condenser import Condenser
 from openhands.memory.condenser.condenser import Condensation, View
-from openhands.memory.conversation import ConversationMemory
+from openhands.memory.conversation_memory import ConversationMemory
 from openhands.runtime.plugins import PluginRequirement
 from openhands.utils.prompt import Message, PromptManager
 
@@ -86,7 +86,7 @@ class ArchitectAgent(Agent):
         self.tools = self._get_tools()
 
         # Create a ConversationMemory instance
-        self.conversation_memory = ConversationMemory(self.prompt_manager)
+        self.conversation_memory = ConversationMemory(self.config, self.prompt_manager)
 
         self.condenser = Condenser.from_config(self.config.condenser)
         logger.debug(f'Using condenser: {type(self.condenser)}')
