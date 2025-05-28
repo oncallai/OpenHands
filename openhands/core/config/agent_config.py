@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from typing import Optional
 from pydantic import BaseModel, Field, ValidationError
 
+import os
+import json
 from openhands.core.config.condenser_config import CondenserConfig, NoOpCondenserConfig
 from openhands.core.config.extended_config import ExtendedConfig
 from openhands.core.logger import openhands_logger as logger
@@ -45,6 +48,10 @@ class AgentConfig(BaseModel):
     """Extended configuration for the agent."""
 
     model_config = {'extra': 'forbid'}
+    
+    # The load_agent_list method has been removed.
+    # We now use the Agent.list_agents() method from openhands/controller/agent.py
+    # This provides a centralized registry of all available agents
 
     @classmethod
     def from_toml_section(cls, data: dict) -> dict[str, AgentConfig]:
