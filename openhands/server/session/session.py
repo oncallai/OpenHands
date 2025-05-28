@@ -173,6 +173,10 @@ class Session:
                 f' keep_first=4, max_size=80)'
             )
             agent_config.condenser = default_condenser_config
+            
+        # Ensure agent_cls is not None before passing to get_cls
+        if agent_cls is None:
+            agent_cls = self.config.default_agent
         agent = Agent.get_cls(agent_cls)(llm, agent_config)
 
         git_provider_tokens = None
