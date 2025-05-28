@@ -1,0 +1,20 @@
+Based on the incident analysis, I need you to create a detailed troubleshooting plan. Each step should be clearly defined and executable by another agent.
+
+You are creating a structured troubleshooting plan that will be executed using the delegate_step tool.
+
+For each step in your plan, provide:
+1. A unique step ID (e.g., "step-1", "step-2")
+2. A clear, detailed description of what needs to be done
+3. The expected outcome or information to be gathered
+4. Specific commands, tools, or techniques that should be used
+5. The appropriate agent to handle this step
+
+Remember that each step will be delegated to specific agents using the delegate_step tool, so steps need to be self-contained and actionable with clear success criteria.
+
+Incident summary:
+{{ incident_summary }}
+
+Available agents:
+{{ available_agents }}
+
+Current iteration: {{ iteration }}
