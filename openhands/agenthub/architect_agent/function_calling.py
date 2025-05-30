@@ -13,15 +13,14 @@ from litellm import (
 )
 
 from openhands.agenthub.architect_agent.tools import (
-    AnalyzeIncidentTool,
-    RootCauseReportTool,
-    DelegateStepTool,
+    DelegateTaskToAgentTool,
     ThinkTool
 )
 from openhands.core.exceptions import (
     FunctionCallNotExistsError,
     FunctionCallValidationError,
 )
+from openhands.controller.agent import Agent
 from openhands.core.logger import openhands_logger as logger
 from openhands.events.action import (
     Action,
@@ -74,43 +73,31 @@ def response_to_actions(
                 ) from e
 
             # ================================================
-            # AnalyzeIncidentTool
+            # DelegateTaskToAgentTool
             # ================================================
-            if tool_call.function.name == AnalyzeIncidentTool['function']['name']:
-                if 'incident_description' not in arguments:
+            if tool_call.function.name == DelegateTaskToAgentTool['function']['name']:
+                if 'task_id' not in arguments:
                     raise FunctionCallValidationError(
-                        f'Missing required argument "incident_description" in tool call {tool_call.function.name}'
-                    )
-                incident_description = arguments.get("incident_description", "")
-                action = MessageAction(
-                    content=f"Analyzing incident: {incident_description[:100]}..."
-                )
-                setattr(action, '_source', 'agent')
-                
-            # ================================================
-            # RootCauseReportTool
-            # ================================================
-            elif tool_call.function.name == RootCauseReportTool['function']['name']:
-                action = MessageAction(
-                    content="Creating root cause report based on completed troubleshooting steps..."
-                )
-                setattr(action, '_source', 'agent')
-                
-            # ================================================
-            # DelegateStepTool
-            # ================================================
-            elif tool_call.function.name == DelegateStepTool['function']['name']:
-                if 'step_id' not in arguments:
-                    raise FunctionCallValidationError(
-                        f'Missing required argument "step_id" in tool call {tool_call.function.name}'
+                        f'Missing required argument "task_id" in tool call {tool_call.function.name}'
                     )
                 if 'agent_type' not in arguments:
                     raise FunctionCallValidationError(
                         f'Missing required argument "agent_type" in tool call {tool_call.function.name}'
                     )
+                
+                # Validate agent_type against registered agents
+                agent_type = arguments.get('agent_type', '')
+                available_agents = Agent.list_agents()  # This returns a list of strings, not a dictionary
+                
+                if agent_type not in available_agents:
+                    valid_agents = ', '.join(available_agents)  # available_agents is already a list of strings
+                    raise FunctionCallValidationError(
+                        f'Agent type "{agent_type}" is not registered. Valid agents are: {valid_agents}'
+                    )
+                
                 # Create proper delegate action to the agent type
                 action = AgentDelegateAction(
-                    agent=arguments.get('agent_type', ''),
+                    agent=agent_type,
                     inputs=arguments,
                 )
                 
@@ -193,7 +180,15 @@ def _is_finish_message(content: str) -> bool:
         "task is finished",
         "task has been completed",
         "all steps are completed",
-        "all done"
+        "all done",
+        "root cause identified",
+        "root cause determined",
+        "solution found",
+        "issue resolved",
+        "problem solved",
+        "incident analysis complete",
+        "troubleshooting complete",
+        "analysis complete"
     ]
     
     # Check if any of the completion phrases are in the message

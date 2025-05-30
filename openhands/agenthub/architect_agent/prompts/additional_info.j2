@@ -33,10 +33,15 @@
 {% endif %}
 
 # Tool Usage Guidelines
-- Use the analyze_incident tool to create a structured analysis and troubleshooting plan
-- Use the delegate_step tool to assign steps to appropriate agents
-- Use the think tool when you need to reason through complex problems
-- Use the create_root_cause_report tool when all steps are complete
+- Use the think tool when you need to reason through complex problems or analyze an incident
+- Use the delegate_task_to_agent tool to assign specific tasks to appropriate specialized agents
+
+# Incident Analysis Guidelines
+- First thoroughly understand the incident by reviewing all available information
+- Consider multiple potential causes and prioritize based on likelihood
+- Create a structured troubleshooting plan with clear, actionable steps
+- Match each task to the agent with the most relevant expertise
+- After receiving results from delegated tasks, synthesize findings to determine root cause
 
 {% if conversation_instructions and conversation_instructions.content %}
 # Conversation Instructions
