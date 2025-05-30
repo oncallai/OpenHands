@@ -15,7 +15,9 @@ from litellm import ChatCompletionToolParam
 
 # OpenHands framework imports
 from openhands.controller.agent import Agent
-from openhands.controller.state.incident import Incident, TroubleshootingStep
+from openhands.controller.state.incident import Incident
+from openhands.core.action import MessageAction
+from openhands.core.message import Message, TextContent
 from openhands.controller.state.state import State
 from openhands.core.config import AgentConfig
 from openhands.core.logger import openhands_logger as logger
@@ -230,36 +232,17 @@ class ArchitectAgent(Agent):
                         state.incident.complete_step(task_id, result_str)
                         logger.debug(f"Updated step {task_id} as completed with result: {result_str}")
 
-    def _get_messages(self, events: list[Event], initial_user_message: MessageAction) -> list[Message]:
-        """
-        Constructs the message history for the LLM conversation by processing events from the state
-        and formatting them into messages that the LLM can understand. It handles both regular
-        message flow and function-calling scenarios.
+    def _get_messages(self, events: list[Event], initial_user_message: MessageAction
+    ) -> list[Message]:
+        """Convert events into a list of messages for LLM consumption.
 
-        This method performs the following steps:
-        1. Check for SystemMessageAction in events, adds one if missing (legacy support)
+        This method:
+        1. Creates a system message based on the prompt template and available agents
         2. Processes events into a proper conversation flow, including SystemMessageAction
         3. Handles tool calls and their responses in function-calling mode
         4. Manages multi-turn chat interaction (user/assistant/tool responses)
         5. Applies character limits and truncation when necessary to fit context limits
         6. Adds environment reminders for non-function-calling mode
-
-        Args:
-            events: The list of events to convert to messages
-            initial_user_message: The initial user message to include
-
-        Returns:
-            list[Message]: A list of formatted messages ready for LLM consumption, including:
-                - System message with prompt (from SystemMessageAction)
-                - Action messages (from both user and assistant)
-                - Observation messages (including tool responses)
-                - Environment reminders (in non-function-calling mode)
-
-        Note:
-            - In function-calling mode, tool calls and their responses are carefully tracked
-              to maintain proper conversation flow
-            - Messages from the same role are combined to prevent consecutive same-role messages
-            - When possible, specific messages are cached according to their interpretation
         """
         if not self.prompt_manager:
             raise Exception('Prompt Manager not instantiated.')
@@ -272,21 +255,29 @@ class ArchitectAgent(Agent):
             vision_is_active=self.llm.vision_is_active(),
         )
 
+        # Use the existing list of available agents from init
+        import json
+
+        # Create a message with the list of available agents
+        agent_list_message = Message(
+            role='system',
+            content=[
+                TextContent(
+                    text='IMPORTANT: Available agents are the following: ' + json.dumps(self.agent_list)
+                )
+            ]
+        )
+
+        # Insert the agent list message after the system message
+        if len(messages) > 1:
+            messages.insert(1, agent_list_message)  # Insert after system message
+        else:
+            messages.append(agent_list_message)
+
         if self.llm.is_caching_prompt_active():
             self.conversation_memory.apply_prompt_caching(messages)
 
         return messages
-
-    # All the following parsing methods have been removed as they're no longer needed with the tool-driven approach:
-    # - _extract_incident_description
-    # - _parse_incident_analysis
-    # - _parse_json_plan
-    # - _parse_troubleshooting_plan
-    # - _parse_root_cause
-    #
-    # In the tool-driven approach, the LLM returns structured data through tool calls
-    # which are processed by the function_calling.py module. No manual parsing of
-    # LLM text output is required.
 
     def _get_initial_user_message(self, history: list[Event]) -> MessageAction:
         """Finds the initial user message action from the full history."""
