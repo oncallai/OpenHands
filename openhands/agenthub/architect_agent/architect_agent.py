@@ -16,7 +16,6 @@ from litellm import ChatCompletionToolParam
 # OpenHands framework imports
 from openhands.controller.agent import Agent
 from openhands.controller.state.incident import Incident
-from openhands.core.action import MessageAction
 from openhands.core.message import Message, TextContent
 from openhands.controller.state.state import State
 from openhands.core.config import AgentConfig
@@ -177,6 +176,7 @@ class ArchitectAgent(Agent):
 
         # Prepare messages for LLM
         initial_user_message = self._get_initial_user_message(state.history)
+        logger.info(f'Initial user message: {initial_user_message}')
         messages = self._get_messages(condensed_history, initial_user_message)
 
         # Call LLM with tools
