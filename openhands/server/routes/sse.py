@@ -28,10 +28,10 @@ app = APIRouter(prefix='/api/sse', dependencies=get_dependencies())
 
 # Create global SSE conversation manager
 sse_conversation_manager = SSEStandaloneConversationManager(
-    sio=None,  # SSE doesn't use socketio
     config=config,
     file_store=file_store,
     server_config=server_config,
+    sio=None,  # SSE doesn't use socketio
     monitoring_listener=MonitoringListener(),
 )
 

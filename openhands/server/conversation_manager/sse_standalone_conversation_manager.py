@@ -38,10 +38,11 @@ UPDATED_AT_CALLBACK_ID = 'updated_at_callback_id'
 class SSEStandaloneConversationManager(ConversationManager):
     """Manages conversations in standalone mode (single server instance) with SSE support."""
 
-    sio: Any = None  # SSE doesn't use socketio but parameter is required for compatibility
     config: OpenHandsConfig
     file_store: FileStore
     server_config: ServerConfig
+    # Fields below have default values
+    sio: Any = None  # SSE doesn't use socketio but parameter is required for compatibility
     # Defaulting monitoring_listener for temp backward compatibility.
     monitoring_listener: MonitoringListener = MonitoringListener()
     _local_agent_loops_by_sid: dict[str, SSESession] = field(default_factory=dict)  # Changed to SSESession
@@ -379,6 +380,7 @@ class SSEStandaloneConversationManager(ConversationManager):
             config=config,
             file_store=file_store,
             server_config=server_config,
+            sio=sio,  # Pass sio but it won't be used
             monitoring_listener=monitoring_listener,
         )
 
