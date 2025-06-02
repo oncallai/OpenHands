@@ -145,7 +145,7 @@ async def stream_conversation_events(
                             agent_state_changed = event
                         else:
                             event_data = event_to_dict(event)
-                        yield f"data: {json.dumps(event_data)}\n\n"
+                            yield f"data: {json.dumps(event_data)}\n\n"
 
                 # Send final agent state
                 if agent_state_changed:
@@ -183,9 +183,11 @@ async def stream_conversation_events(
             enhanced_event_generator(),
             media_type="text/event-stream",
             headers={
-                "Cache-Control": "no-cache",
+                "Cache-Control": "no-cache, no-transform",
                 "Connection": "keep-alive",
                 "X-Accel-Buffering": "no",
+                "Content-Type": "text/event-stream",
+                "Transfer-Encoding": "chunked"
             }
         )
 
@@ -220,9 +222,8 @@ async def send_action_to_conversation(
             "args": action_request.args
         }
 
-        # Send via SSE manager
-        connection_id = f"sse_action_{uuid.uuid4()}"
-        await sse_conversation_manager.send_to_event_stream(connection_id, data)
+        # Send via SSE manager - use conversation ID directly
+        await sse_conversation_manager.send_to_conversation(conversation_id, data)
 
         return {"status": "success", "message": "Action sent to conversation"}
 

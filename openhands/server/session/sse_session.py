@@ -452,7 +452,7 @@ class SSESession:
             data = message.data
         else:
             data = json.dumps(message.data, ensure_ascii=False)
-            
+
         # Split multiline data
         for line in data.split('\n'):
             lines.append(f"data: {line}")

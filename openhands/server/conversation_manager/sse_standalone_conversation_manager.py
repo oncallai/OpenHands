@@ -322,6 +322,33 @@ class SSEStandaloneConversationManager(ConversationManager):
             return
 
         raise RuntimeError(f'no_connected_session:{connection_id}:{sid}')
+        
+    async def send_to_conversation(self, conversation_id: str, data: dict):
+        """Send data directly to a conversation using its ID.
+        
+        This bypasses the connection_id lookup and sends directly to the session
+        associated with the conversation ID.
+        
+        Args:
+            conversation_id: The conversation ID
+            data: The data to send
+            
+        Raises:
+            RuntimeError: If no active session exists for this conversation
+        """
+        # Get the session directly by conversation ID
+        session = self._local_agent_loops_by_sid.get(conversation_id)
+        
+        if not session:
+            raise RuntimeError(f'No active session for this conversation')
+        
+        # Check if session is fully initialized and ready for messages
+        if not getattr(session, '_initialization_complete', False):
+            raise RuntimeError(f'Session exists but is not fully initialized')
+            
+        # Dispatch the message
+        await session.dispatch(data)
+        return
 
     async def disconnect_from_session(self, connection_id: str):
         sid = self._local_connection_id_to_session_id.pop(connection_id, None)
@@ -513,15 +540,38 @@ class SSEStandaloneConversationManager(ConversationManager):
                 'active': False,
                 'session_exists': False,
                 'connections': 0,
-                'last_active': None
+                'last_active': None,
+                'agent_state': None,
+                'ready_for_messages': False
             }
 
+        # Check if the session is fully initialized and the Docker container is ready
+        docker_ready = False
+        agent_state = None
+        ready_for_messages = False
+        
+        if hasattr(session, '_initialization_complete') and session._initialization_complete:
+            ready_for_messages = True
+        
+        if hasattr(session, '_agent_state'):
+            agent_state = session._agent_state
+            # If the agent is awaiting input or other active states, it's ready
+            if agent_state in ['awaiting_user_input', 'ready', 'READY']:
+                ready_for_messages = True
+        
+        if hasattr(session, '_agent_controller') and session._agent_controller:
+            if hasattr(session._agent_controller, 'docker_container') and session._agent_controller.docker_container:
+                docker_ready = True
+        
         return {
             'active': session.is_alive,
             'session_exists': True,
             'connections': session.active_connections,
             'last_active': session.last_active_ts,
-            'queue_size': session.event_queue.qsize() if session.event_queue else 0
+            'queue_size': session.event_queue.qsize() if session.event_queue else 0,
+            'agent_state': agent_state,
+            'docker_ready': docker_ready,
+            'ready_for_messages': ready_for_messages
         }
 
 
