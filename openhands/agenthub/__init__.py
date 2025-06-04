@@ -4,7 +4,6 @@ load_dotenv()
 
 
 from openhands.agenthub import (  # noqa: E402
-    architect_agent,
     # browsing_agent,
     codeact_agent,
     # dummy_agent,
@@ -16,7 +15,6 @@ from openhands.controller.agent import Agent  # noqa: E402
 
 __all__ = [
     'Agent',
-    'architect_agent',
     'codeact_agent',
     # 'dummy_agent',
     # 'browsing_agent',
