@@ -5,13 +5,13 @@ from openhands.events.stream import EventStream
 from openhands.runtime import get_runtime_cls
 from openhands.runtime.base import Runtime
 from openhands.security import SecurityAnalyzer, options
-from openhands.storage.files import FileStore
+from openhands.storage.base import Store
 from openhands.utils.async_utils import call_sync_from_async
 
 
 class ServerConversation:
     sid: str
-    file_store: FileStore
+    file_store: Store
     event_stream: EventStream
     runtime: Runtime
     user_id: str | None
@@ -19,7 +19,7 @@ class ServerConversation:
     def __init__(
         self,
         sid: str,
-        file_store: FileStore,
+        file_store: Store,
         config: OpenHandsConfig,
         user_id: str | None,
     ):

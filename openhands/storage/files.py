@@ -1,5 +1,7 @@
-from openhands.storage.base import Store
 from abc import abstractmethod
+
+from openhands.storage.base import Store
+
 
 class FileStore(Store):
     @abstractmethod

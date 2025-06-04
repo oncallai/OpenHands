@@ -6,6 +6,7 @@ import pickle
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, Type, cast
+from openhands.storage.base import Store
 
 import openhands
 from openhands.controller.state.incident import Incident
@@ -109,13 +110,13 @@ class State:
     incident: Optional[Incident] = None
 
     def save_to_session(
-        self, sid: str, file_store: FileStore, user_id: str | None
+        self, sid: str, store: Store, user_id: str | None = None
     ) -> None:
         pickled = pickle.dumps(self)
         logger.debug(f'Saving state to session {sid}:{self.agent_state}')
         encoded = base64.b64encode(pickled).decode('utf-8')
         try:
-            file_store.write(
+            store.write(
                 get_conversation_agent_state_filename(sid, user_id), encoded
             )
 
@@ -123,7 +124,7 @@ class State:
             if user_id:
                 filename = get_conversation_agent_state_filename(sid)
                 try:
-                    file_store.delete(filename)
+                    store.delete(filename)
                 except Exception:
                     pass
         except Exception as e:
@@ -132,7 +133,7 @@ class State:
 
     @staticmethod
     def restore_from_session(
-        sid: str, file_store: FileStore, user_id: str | None = None
+        sid: str, store: Store, user_id: str | None = None
     ) -> 'State':
         """
         Restores the state from the previously saved session.
@@ -140,7 +141,7 @@ class State:
 
         state: State
         try:
-            encoded = file_store.read(
+            encoded = store.read(
                 get_conversation_agent_state_filename(sid, user_id)
             )
             pickled = base64.b64decode(encoded)
@@ -150,7 +151,7 @@ class State:
             # and we need to check if the state is in the old directory.
             if user_id:
                 filename = get_conversation_agent_state_filename(sid)
-                encoded = file_store.read(filename)
+                encoded = store.read(filename)
                 pickled = base64.b64decode(encoded)
                 state = pickle.loads(pickled)
             else:

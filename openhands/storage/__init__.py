@@ -6,8 +6,16 @@ from openhands.storage.files import FileStore
 from openhands.storage.google_cloud import GoogleCloudFileStore
 from openhands.storage.local import LocalFileStore
 from openhands.storage.memory import InMemoryFileStore
+from openhands.storage.postgres_supabase import PostgresStore
 from openhands.storage.s3 import S3FileStore
 from openhands.storage.web_hook import WebHookFileStore
+
+
+def get_db_store(table: str | None = None) -> PostgresStore:
+    """
+    Returns a PostgresStore instance using the given table name or the SUPABASE_TABLE env var.
+    """
+    return PostgresStore(table=table)
 
 
 def get_file_store(

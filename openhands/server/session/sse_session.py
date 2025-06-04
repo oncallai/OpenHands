@@ -32,7 +32,8 @@ from openhands.llm.llm import LLM
 from openhands.server.session.agent_session import AgentSession
 from openhands.server.session.conversation_init_data import ConversationInitData
 from openhands.storage.data_models.settings import Settings
-from openhands.storage.files import FileStore
+from openhands.storage.base import Store
+from openhands.storage.base import Store
 
 
 class SSEMessage:
@@ -59,7 +60,7 @@ class SSESession:
     agent_session: AgentSession
     loop: asyncio.AbstractEventLoop
     config: OpenHandsConfig
-    file_store: FileStore
+    file_store: Store
     user_id: str | None
     logger: LoggerAdapter
 
@@ -67,7 +68,7 @@ class SSESession:
         self,
         sid: str,
         config: OpenHandsConfig,
-        file_store: FileStore,
+        file_store: Store,
         user_id: str | None = None,
     ):
         self.sid = sid

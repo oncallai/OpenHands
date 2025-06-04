@@ -1,6 +1,11 @@
 SHELL=/usr/bin/env bash
 # Makefile for OpenHands project
 
+.PHONY: migrate-db
+migrate-db:
+	@echo "Running database migration..."
+	python3 openhands/storage/migration/run_migration.py
+
 # Variables
 BACKEND_HOST ?= "127.0.0.1"
 BACKEND_PORT = 3000

@@ -19,7 +19,8 @@ from openhands.server.session.sse_session import SSESession, SSEMessage  # Impor
 from openhands.storage.conversation.conversation_store import ConversationStore
 from openhands.storage.data_models.conversation_metadata import ConversationMetadata
 from openhands.storage.data_models.settings import Settings
-from openhands.storage.files import FileStore
+from openhands.storage.base import Store
+from openhands.storage.base import Store
 from openhands.utils.async_utils import GENERAL_TIMEOUT, call_async_from_sync, wait_all
 from openhands.utils.conversation_summary import (
     auto_generate_title,
@@ -39,7 +40,7 @@ class SSEStandaloneConversationManager(ConversationManager):
     """Manages conversations in standalone mode (single server instance) with SSE support."""
 
     config: OpenHandsConfig
-    file_store: FileStore
+    file_store: Store
     server_config: ServerConfig
     # Fields below have default values
     sio: Any = None  # SSE doesn't use socketio but parameter is required for compatibility
@@ -398,7 +399,7 @@ class SSEStandaloneConversationManager(ConversationManager):
         cls,
         sio: Any, # Added to match parent signature, but not used for SSE
         config: OpenHandsConfig,
-        file_store: FileStore,
+        file_store: Store,
         server_config: ServerConfig,
         monitoring_listener: MonitoringListener,
     ) -> ConversationManager:
