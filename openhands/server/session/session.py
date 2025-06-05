@@ -31,7 +31,7 @@ from openhands.llm.llm import LLM
 from openhands.server.session.agent_session import AgentSession
 from openhands.server.session.conversation_init_data import ConversationInitData
 from openhands.storage.data_models.settings import Settings
-from openhands.storage.files import Store
+from openhands.storage.store import Store
 
 ROOM_KEY = 'room:{sid}'
 

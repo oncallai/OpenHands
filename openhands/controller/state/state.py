@@ -6,7 +6,7 @@ import pickle
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, Type, cast
-from openhands.storage.base import Store
+from openhands.storage.store import Store
 
 import openhands
 from openhands.controller.state.incident import Incident

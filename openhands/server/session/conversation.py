@@ -5,7 +5,7 @@ from openhands.events.stream import EventStream
 from openhands.runtime import get_runtime_cls
 from openhands.runtime.base import Runtime
 from openhands.security import SecurityAnalyzer, options
-from openhands.storage.base import Store
+from openhands.storage.store import Store
 from openhands.utils.async_utils import call_sync_from_async
 
 
