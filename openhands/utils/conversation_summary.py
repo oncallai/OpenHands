@@ -8,8 +8,8 @@ from openhands.events.action.message import MessageAction
 from openhands.events.event import EventSource
 from openhands.events.stream import EventStream
 from openhands.llm.llm import LLM
-from openhands.storage.base import Store
 from openhands.storage.data_models.settings import Settings
+from openhands.storage.store import Store
 
 
 async def generate_conversation_title(

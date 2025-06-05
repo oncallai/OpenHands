@@ -1,6 +1,6 @@
 from abc import abstractmethod
 
-from openhands.storage.base import Store
+from openhands.storage.store import Store
 
 
 class FileStore(Store):
