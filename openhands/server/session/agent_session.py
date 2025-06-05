@@ -72,7 +72,8 @@ class AgentSession:
         """
 
         self.sid = sid
-        self.event_stream = EventStream(sid, fStore, user_id)
+        from openhands.server.shared import EventStreamImpl
+        self.event_stream = EventStreamImpl(sid, fStore, user_id)
         self.fStore = fStore
         self._status_callback = status_callback
         self.user_id = user_id

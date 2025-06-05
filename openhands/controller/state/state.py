@@ -105,7 +105,7 @@ class State:
     # evaluation tasks to store extra data needed to track the progress/state of the task.
     extra_data: dict[str, Any] = field(default_factory=dict)
     last_error: str = ''
-    
+
     # Incident object used by the ArchitectAgent and potentially other agents
     incident: Optional[Incident] = None
 
@@ -115,13 +115,15 @@ class State:
         pickled = pickle.dumps(self)
         logger.debug(f'Saving state to session {sid}:{self.agent_state}')
         encoded = base64.b64encode(pickled).decode('utf-8')
+        logger.info(f"*******called********")
         try:
-            store.write(
-                get_conversation_agent_state_filename(sid, user_id), encoded
-            )
+            # Use session id as key for DBStore, file path for others
+            from openhands.storage.db import DBStore
+            key = sid if isinstance(store, DBStore) else get_conversation_agent_state_filename(sid, user_id)
+            store.write(key, encoded)
 
             # see if state is in the old directory on saas/remote use cases and delete it.
-            if user_id:
+            if user_id and not isinstance(store, DBStore):
                 filename = get_conversation_agent_state_filename(sid)
                 try:
                     store.delete(filename)
@@ -140,24 +142,29 @@ class State:
         """
 
         state: State
+        from openhands.storage.db import DBStore
         try:
-            encoded = store.read(
-                get_conversation_agent_state_filename(sid, user_id)
-            )
-            pickled = base64.b64decode(encoded)
-            state = pickle.loads(pickled)
-        except FileNotFoundError:
-            # if user_id is provided, we are in a saas/remote use case
-            # and we need to check if the state is in the old directory.
-            if user_id:
-                filename = get_conversation_agent_state_filename(sid)
-                encoded = store.read(filename)
+            if isinstance(store, DBStore):
+                # DB backend: only use session id as key, no legacy fallback
+                key = sid
+                encoded = store.read(key)
                 pickled = base64.b64decode(encoded)
                 state = pickle.loads(pickled)
             else:
-                raise FileNotFoundError(
-                    f'Could not restore state from session file for sid: {sid}'
-                )
+                # File backend: use filename, fallback to legacy location if needed
+                key = get_conversation_agent_state_filename(sid, user_id)
+                try:
+                    encoded = store.read(key)
+                except FileNotFoundError:
+                    if user_id:
+                        filename = get_conversation_agent_state_filename(sid)
+                        encoded = store.read(filename)
+                    else:
+                        raise FileNotFoundError(
+                            f'Could not restore state from session file for sid: {sid}'
+                        )
+                pickled = base64.b64decode(encoded)
+                state = pickle.loads(pickled)
         except Exception as e:
             logger.debug(f'Could not restore state from session: {e}')
             raise e

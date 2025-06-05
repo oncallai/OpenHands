@@ -26,14 +26,14 @@ class PostgresStore(DBStore):
     def write(self, path: str, contents: str | bytes) -> None:
         # Upsert by 'id' (path)
         table = self.table
-        query = f'INSERT INTO {table} (id, contents) VALUES (%s, %s) '
-        query += 'ON CONFLICT (id) DO UPDATE SET contents = EXCLUDED.contents'
+        query = f'INSERT INTO {table} (id, agent_state) VALUES (%s, %s) '
+        query += 'ON CONFLICT (id) DO UPDATE SET agent_state = EXCLUDED.agent_state'
         with self.conn.cursor() as cur:
             cur.execute(query, (path, contents))
 
     def read(self, path: str) -> str:
         table = self.table
-        query = f'SELECT contents FROM {table} WHERE id = %s'
+        query = f'SELECT agent_state FROM {table} WHERE id = %s'
         with self.conn.cursor() as cur:
             cur.execute(query, (path,))
             row = cur.fetchone()

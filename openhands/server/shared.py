@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 
 from openhands.core.config import load_openhands_config
 from openhands.core.config.openhands_config import OpenHandsConfig
+from openhands.events.stream import EventStream
 from openhands.server.config.server_config import ServerConfig, load_server_config
 from openhands.server.conversation_manager.conversation_manager import (
     ConversationManager,
@@ -17,6 +18,7 @@ from openhands.storage.secrets.secrets_store import SecretsStore
 from openhands.storage.settings.settings_store import SettingsStore
 from openhands.storage.store import Store
 from openhands.utils.import_utils import get_impl
+from openhands.utils.import_utils import get_impl as get_event_stream_impl
 
 load_dotenv()
 
@@ -80,3 +82,5 @@ ConversationStoreImpl = get_impl(
     ConversationStore,
     server_config.conversation_store_class,
 )
+
+EventStreamImpl = get_event_stream_impl(EventStream, server_config.event_stream_class)
