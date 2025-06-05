@@ -39,7 +39,7 @@ class SSEStandaloneConversationManager(ConversationManager):
     """Manages conversations in standalone mode (single server instance) with SSE support."""
 
     config: OpenHandsConfig
-    file_store: Store
+    store: Store
     server_config: ServerConfig
     # Fields below have default values
     sio: Any = None  # SSE doesn't use socketio but parameter is required for compatibility
@@ -70,7 +70,7 @@ class SSEStandaloneConversationManager(ConversationManager):
         self, sid: str, user_id: str | None = None
     ) -> ServerConversation | None:
         start_time = time.time()
-        if not await session_exists(sid, self.file_store, user_id=user_id):
+        if not await session_exists(sid, self.store, user_id=user_id):
             return None
 
         async with self._conversations_lock:
@@ -94,7 +94,7 @@ class SSEStandaloneConversationManager(ConversationManager):
 
             # Create new conversation if none exists
             c = ServerConversation(
-                sid, file_store=self.file_store, config=self.config, user_id=user_id
+                sid, file_store=self.store, config=self.config, user_id=user_id
             )
             try:
                 await c.connect()
@@ -291,7 +291,7 @@ class SSEStandaloneConversationManager(ConversationManager):
         # Create SSE session instead of regular Session
         session = SSESession(
             sid=sid,
-            file_store=self.file_store,
+            file_store=self.store,
             config=self.config,
             user_id=user_id,
         )
@@ -398,14 +398,14 @@ class SSEStandaloneConversationManager(ConversationManager):
         cls,
         sio: Any, # Added to match parent signature, but not used for SSE
         config: OpenHandsConfig,
-        file_store: Store,
+        store: Store,
         server_config: ServerConfig,
         monitoring_listener: MonitoringListener,
     ) -> ConversationManager:
         # SSE doesn't use socketio but we keep the parameter for signature compatibility
         return SSEStandaloneConversationManager(
             config=config,
-            file_store=file_store,
+            store=store,
             server_config=server_config,
             sio=sio,  # Pass sio but it won't be used
             monitoring_listener=monitoring_listener,
@@ -461,7 +461,7 @@ class SSEStandaloneConversationManager(ConversationManager):
             conversation.title == default_title
         ):  # attempt to autogenerate if default title is in use
             title = await auto_generate_title(
-                conversation_id, user_id, self.file_store, settings
+                conversation_id, user_id, self.store, settings
             )
             if title and not title.isspace():
                 conversation.title = title

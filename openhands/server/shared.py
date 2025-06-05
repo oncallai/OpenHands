@@ -11,7 +11,7 @@ from openhands.server.conversation_manager.conversation_manager import (
 )
 from openhands.server.monitoring import MonitoringListener
 from openhands.server.types import ServerConfigInterface
-from openhands.storage import get_file_store
+from openhands.storage import get_db_store, get_file_store
 from openhands.storage.conversation.conversation_store import ConversationStore
 from openhands.storage.secrets.secrets_store import SecretsStore
 from openhands.storage.settings.settings_store import SettingsStore
@@ -26,12 +26,22 @@ assert isinstance(server_config_interface, ServerConfig), (
     'Loaded server config interface is not a ServerConfig, despite this being assumed'
 )
 server_config: ServerConfig = server_config_interface
-file_store: Store = get_file_store(
-    config.file_store,
-    config.file_store_path,
-    config.file_store_web_hook_url,
-    config.file_store_web_hook_headers,
-)
+
+
+def get_store():
+    if server_config.storage_type == 'database':
+        return get_db_store()
+    else:
+        return get_file_store(
+            config.file_store,
+            config.file_store_path,
+            config.file_store_web_hook_url,
+            config.file_store_web_hook_headers,
+        )
+
+
+store: Store = get_store()
+
 
 client_manager = None
 redis_host = os.environ.get('REDIS_HOST')
@@ -59,7 +69,7 @@ ConversationManagerImpl = get_impl(
 )
 
 conversation_manager = ConversationManagerImpl.get_instance(
-    sio, config, file_store, server_config, monitoring_listener
+    sio, config, store, server_config, monitoring_listener
 )
 
 SettingsStoreImpl = get_impl(SettingsStore, server_config.settings_store_class)

@@ -18,7 +18,7 @@ from openhands.events.serialization import event_to_dict
 from openhands.integrations.service_types import ProviderType
 from openhands.server.dependencies import get_dependencies
 from openhands.server.listen_socket import setup_init_convo_settings, _invalid_session_api_key
-from openhands.server.shared import conversation_manager, config, file_store, server_config
+from openhands.server.shared import conversation_manager, config, store, server_config
 from openhands.server.monitoring import MonitoringListener
 from openhands.server.conversation_manager.sse_standalone_conversation_manager import SSEStandaloneConversationManager
 from openhands.server.user_auth import get_user_id
@@ -29,7 +29,7 @@ app = APIRouter(prefix='/api/sse', dependencies=get_dependencies())
 # Create global SSE conversation manager
 sse_conversation_manager = SSEStandaloneConversationManager(
     config=config,
-    file_store=file_store,
+    store=store,
     server_config=server_config,
     sio=None,  # SSE doesn't use socketio
     monitoring_listener=MonitoringListener(),
