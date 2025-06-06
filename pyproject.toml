@@ -19,6 +19,7 @@ packages = [
 ]
 
 [tool.poetry.dependencies]
+psycopg2 = "*"
 python = "^3.12,<3.14"
 litellm = "^1.60.0, !=1.64.4, !=1.67.*"            # avoid 1.64.4 (known bug) & 1.67.* (known bug #10272)
 aiohttp = ">=3.9.0,!=3.11.13"                      # Pin to avoid yanked version 3.11.13
@@ -79,7 +80,7 @@ python-docx = "*"
 bashlex = "^0.18"
 
 # TODO: These are integrations that should probably be optional
-redis = ">=5.2,<7.0"
+redis = { version = ">=5.2,<7.0", extras = ["hiredis"] }
 minio = "^7.2.8"
 daytona-sdk = "0.18.1"
 stripe = ">=11.5,<13.0"

@@ -31,7 +31,7 @@ from openhands.llm.llm import LLM
 from openhands.server.session.agent_session import AgentSession
 from openhands.server.session.conversation_init_data import ConversationInitData
 from openhands.storage.data_models.settings import Settings
-from openhands.storage.files import FileStore
+from openhands.storage.store import Store
 
 ROOM_KEY = 'room:{sid}'
 
@@ -44,7 +44,7 @@ class Session:
     agent_session: AgentSession
     loop: asyncio.AbstractEventLoop
     config: OpenHandsConfig
-    file_store: FileStore
+    file_store: Store
     user_id: str | None
     logger: LoggerAdapter
 
@@ -52,7 +52,7 @@ class Session:
         self,
         sid: str,
         config: OpenHandsConfig,
-        file_store: FileStore,
+        file_store: Store,
         sio: socketio.AsyncServer | None,
         user_id: str | None = None,
     ):
@@ -97,7 +97,9 @@ class Session:
             AgentStateChangedObservation('', AgentState.LOADING),
             EventSource.ENVIRONMENT,
         )
-        agent_cls = settings.agent or self.config.default_agent
+    #    agent_cls = settings.agent or self.config.default_agent
+        agent_cls = self.config.default_agent or settings.agent
+
         self.config.security.confirmation_mode = (
             self.config.security.confirmation_mode
             if settings.confirmation_mode is None
@@ -144,7 +146,9 @@ class Session:
         # TODO: override other LLM config & agent config groups (#2075)
 
         llm = self._create_llm(agent_cls)
-        agent_config = self.config.get_agent_config(agent_cls)
+        # Ensure agent_cls is not None before passing to get_agent_config
+        agent_name = agent_cls if agent_cls is not None else 'agent'
+        agent_config = self.config.get_agent_config(agent_name)
 
         if settings.enable_default_condenser:
             # Default condenser chains a condenser that limits browser the total
@@ -169,6 +173,10 @@ class Session:
                 f' keep_first=4, max_size=80)'
             )
             agent_config.condenser = default_condenser_config
+            
+        # Ensure agent_cls is not None before passing to get_cls
+        if agent_cls is None:
+            agent_cls = self.config.default_agent
         agent = Agent.get_cls(agent_cls)(llm, agent_config)
 
         git_provider_tokens = None

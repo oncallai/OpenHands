@@ -12,10 +12,10 @@ from openhands.events.event import Event, EventSource
 from openhands.events.event_store import EventStore
 from openhands.events.serialization.event import event_from_dict, event_to_dict
 from openhands.io import json
-from openhands.storage import FileStore
 from openhands.storage.locations import (
     get_conversation_dir,
 )
+from openhands.storage.store import Store
 from openhands.utils.async_utils import call_sync_from_async
 from openhands.utils.shutdown_listener import should_continue
 
@@ -32,7 +32,7 @@ class EventStreamSubscriber(str, Enum):
 
 
 async def session_exists(
-    sid: str, file_store: FileStore, user_id: str | None = None
+    sid: str, file_store: Store, user_id: str | None = None
 ) -> bool:
     try:
         await call_sync_from_async(file_store.list, get_conversation_dir(sid, user_id))
@@ -54,7 +54,7 @@ class EventStream(EventStore):
     _thread_loops: dict[str, dict[str, asyncio.AbstractEventLoop]]
     _write_page_cache: list[dict]
 
-    def __init__(self, sid: str, file_store: FileStore, user_id: str | None = None):
+    def __init__(self, sid: str, file_store: Store, user_id: str | None = None):
         super().__init__(sid, file_store, user_id)
         self._stop_flag = threading.Event()
         self._queue: queue.Queue[Event] = queue.Queue()

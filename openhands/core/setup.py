@@ -52,8 +52,8 @@ def create_runtime(
     session_id = sid or generate_sid(config)
 
     # set up the event stream
-    file_store = get_file_store(config.file_store, config.file_store_path)
-    event_stream = EventStream(session_id, file_store)
+    store = get_file_store(config.store, config.store_path)
+    event_stream = EventStream(session_id, store)
 
     # set up the security analyzer
     if config.security.security_analyzer:
