@@ -18,10 +18,10 @@ from openhands.server.monitoring import MonitoringListener
 from openhands.server.session.agent_session import WAIT_TIME_BEFORE_CLOSE
 from openhands.server.session.conversation import ServerConversation
 from openhands.server.session.session import ROOM_KEY, Session
+from openhands.storage.store import Store
 from openhands.storage.conversation.conversation_store import ConversationStore
 from openhands.storage.data_models.conversation_metadata import ConversationMetadata
 from openhands.storage.data_models.settings import Settings
-from openhands.storage.files import FileStore
 from openhands.utils.async_utils import GENERAL_TIMEOUT, call_async_from_sync, wait_all
 from openhands.utils.conversation_summary import (
     auto_generate_title,
@@ -45,7 +45,7 @@ class StandaloneConversationManager(ConversationManager):
 
     sio: socketio.AsyncServer
     config: OpenHandsConfig
-    file_store: FileStore
+    file_store: Store
     server_config: ServerConfig
     # Defaulting monitoring_listener for temp backward compatibility.
     monitoring_listener: MonitoringListener = MonitoringListener()
@@ -388,7 +388,7 @@ class StandaloneConversationManager(ConversationManager):
         cls,
         sio: socketio.AsyncServer,
         config: OpenHandsConfig,
-        file_store: FileStore,
+        file_store: Store,
         server_config: ServerConfig,
         monitoring_listener: MonitoringListener | None,
     ) -> ConversationManager:

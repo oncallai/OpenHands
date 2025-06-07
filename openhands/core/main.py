@@ -82,7 +82,7 @@ async def run_controller(
         Exception: Various exceptions may be raised during execution and will be logged.
 
     Notes:
-        - State persistence: If config.file_store is set, the agent's state will be
+        - State persistence: If config.store is set, the agent's state will be
           saved between sessions.
         - Trajectories: If config.trajectories_path is set, execution history will be
           saved as JSON for analysis.
@@ -207,7 +207,7 @@ async def run_controller(
         logger.error(f'Exception in main loop: {e}')
 
     # save session when we're about to close
-    if config.file_store is not None and config.file_store != 'memory':
+    if config.store is not None and config.store != 'memory':
         end_state = controller.get_state()
         # NOTE: the saved state does not include delegates events
         end_state.save_to_session(

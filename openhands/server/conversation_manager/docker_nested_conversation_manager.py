@@ -33,11 +33,11 @@ from openhands.server.monitoring import MonitoringListener
 from openhands.server.session.conversation import ServerConversation
 from openhands.server.session.conversation_init_data import ConversationInitData
 from openhands.server.session.session import ROOM_KEY, Session
+from openhands.storage.base import Store
 from openhands.storage.conversation.conversation_store import ConversationStore
 from openhands.storage.data_models.conversation_metadata import ConversationMetadata
 from openhands.storage.data_models.conversation_status import ConversationStatus
 from openhands.storage.data_models.settings import Settings
-from openhands.storage.files import FileStore
 from openhands.storage.locations import get_conversation_dir
 from openhands.utils.async_utils import call_sync_from_async
 from openhands.utils.import_utils import get_impl
@@ -50,7 +50,7 @@ class DockerNestedConversationManager(ConversationManager):
     sio: socketio.AsyncServer
     config: OpenHandsConfig
     server_config: ServerConfig
-    file_store: FileStore
+    file_store: Store
     docker_client: docker.DockerClient = field(default_factory=docker.from_env)
     _conversation_store_class: type[ConversationStore] | None = None
     _starting_conversation_ids: set[str] = field(default_factory=set)
@@ -338,7 +338,7 @@ class DockerNestedConversationManager(ConversationManager):
         cls,
         sio: socketio.AsyncServer,
         config: OpenHandsConfig,
-        file_store: FileStore,
+        file_store: Store,
         server_config: ServerConfig,
         monitoring_listener: MonitoringListener,
     ) -> ConversationManager:

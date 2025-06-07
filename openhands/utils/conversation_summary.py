@@ -9,7 +9,7 @@ from openhands.events.event import EventSource
 from openhands.events.stream import EventStream
 from openhands.llm.llm import LLM
 from openhands.storage.data_models.settings import Settings
-from openhands.storage.files import FileStore
+from openhands.storage.store import Store
 
 
 async def generate_conversation_title(
@@ -76,7 +76,7 @@ def get_default_conversation_title(conversation_id: str) -> str:
 
 
 async def auto_generate_title(
-    conversation_id: str, user_id: str | None, file_store: FileStore, settings: Settings
+    conversation_id: str, user_id: str | None, file_store: Store, settings: Settings
 ) -> str:
     """
     Auto-generate a title for a conversation based on the first user message.
