@@ -29,7 +29,7 @@ from openhands.runtime.base import Runtime
 from openhands.runtime.impl.remote.remote_runtime import RemoteRuntime
 from openhands.security import SecurityAnalyzer, options
 from openhands.storage.data_models.user_secrets import UserSecrets
-from openhands.storage.files import FileStore
+from openhands.storage.store import Store
 from openhands.utils.async_utils import EXECUTOR, call_sync_from_async
 from openhands.utils.shutdown_listener import should_continue
 
@@ -47,7 +47,7 @@ class AgentSession:
     sid: str
     user_id: str | None
     event_stream: EventStream
-    file_store: FileStore
+    fStore: Store
     controller: AgentController | None = None
     runtime: Runtime | None = None
     security_analyzer: SecurityAnalyzer | None = None
@@ -60,7 +60,7 @@ class AgentSession:
     def __init__(
         self,
         sid: str,
-        file_store: FileStore,
+        fStore: Store,
         status_callback: Callable | None = None,
         user_id: str | None = None,
     ) -> None:
@@ -68,12 +68,13 @@ class AgentSession:
 
         Parameters:
         - sid: The session ID
-        - file_store: Instance of the FileStore
+        - fStore: Instance of the Store
         """
 
         self.sid = sid
-        self.event_stream = EventStream(sid, file_store, user_id)
-        self.file_store = file_store
+        from openhands.server.shared import EventStreamImpl
+        self.event_stream = EventStreamImpl(sid, fStore, user_id)
+        self.fStore = fStore
         self._status_callback = status_callback
         self.user_id = user_id
         self.logger = OpenHandsLoggerAdapter(
@@ -225,7 +226,7 @@ class AgentSession:
             self.event_stream.close()
         if self.controller is not None:
             end_state = self.controller.get_state()
-            end_state.save_to_session(self.sid, self.file_store, self.user_id)
+            end_state.save_to_session(self.sid, self.fStore, self.user_id)
             await self.controller.close()
         if self.runtime is not None:
             EXECUTOR.submit(self.runtime.close)
@@ -480,7 +481,7 @@ class AgentSession:
         # if we have events in the stream.
         try:
             restored_state = State.restore_from_session(
-                self.sid, self.file_store, self.user_id
+                self.sid, self.fStore, self.user_id
             )
             self.logger.debug(f'Restored state from session, sid: {self.sid}')
         except Exception as e:

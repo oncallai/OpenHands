@@ -12,7 +12,7 @@ from openhands.server.monitoring import MonitoringListener
 from openhands.server.session.conversation import ServerConversation
 from openhands.storage.conversation.conversation_store import ConversationStore
 from openhands.storage.data_models.settings import Settings
-from openhands.storage.files import FileStore
+from openhands.storage.store import Store
 
 
 class ConversationManager(ABC):
@@ -43,7 +43,7 @@ class ConversationManager(ABC):
 
     sio: socketio.AsyncServer
     config: OpenHandsConfig
-    file_store: FileStore
+    file_store: Store
     conversation_store: ConversationStore
 
     @abstractmethod
@@ -126,7 +126,7 @@ class ConversationManager(ABC):
         cls,
         sio: socketio.AsyncServer,
         config: OpenHandsConfig,
-        file_store: FileStore,
+        file_store: Store,
         server_config: ServerConfig,
         monitoring_listener: MonitoringListener,
     ) -> ConversationManager:
