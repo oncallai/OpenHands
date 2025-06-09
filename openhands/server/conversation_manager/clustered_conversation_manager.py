@@ -421,4 +421,4 @@ class ClusteredConversationManager(StandaloneConversationManager):
         server_config: ServerConfig,
         monitoring_listener: MonitoringListener | None,
     ) -> ConversationManager:
-        return ClusteredConversationManager(sio, config, file_store, server_config, monitoring_listener or MonitoringListener())
+        return ClusteredConversationManager(sio, config, file_store, server_config, monitoring_listener)

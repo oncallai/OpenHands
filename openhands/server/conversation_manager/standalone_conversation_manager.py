@@ -47,8 +47,8 @@ class StandaloneConversationManager(ConversationManager):
     config: OpenHandsConfig
     file_store: Store
     server_config: ServerConfig
-    # Defaulting monitoring_listener for temp backward compatibility.
-    monitoring_listener: MonitoringListener = MonitoringListener()
+    # Monitoring listener can be None and will default to a no-op implementation
+    monitoring_listener: MonitoringListener | None = field(default_factory=MonitoringListener)
     _local_agent_loops_by_sid: dict[str, Session] = field(default_factory=dict)
     _local_connection_id_to_session_id: dict[str, str] = field(default_factory=dict)
     _active_conversations: dict[str, tuple[ServerConversation, int]] = field(
