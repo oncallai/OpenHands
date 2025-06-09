@@ -6,19 +6,21 @@ from openhands.utils.import_utils import get_impl
 
 
 class ServerConfig(ServerConfigInterface):
-    storage_type: str = os.environ.get('OPENHANDS_STORAGE_TYPE', 'database')  # 'database' or 'filestore'
-    # Dynamically select event stream class based on backend, allow override via env
-    event_stream_class: str = os.environ.get(
-        'EVENT_STREAM_CLASS',
-        'openhands.events.db_event_stream.DBEventStream' if storage_type == 'database'
-        else 'openhands.events.stream.EventStream'
-    )
     config_cls = os.environ.get('OPENHANDS_CONFIG_CLS', None)
     app_mode = AppMode.OSS
     posthog_client_key = 'phc_3ESMmY9SgqEAGBB6sMGK5ayYHkeUuknH2vP6FmWH9RA'
     github_client_id = os.environ.get('GITHUB_APP_CLIENT_ID', '')
     enable_billing = os.environ.get('ENABLE_BILLING', 'false') == 'true'
     hide_llm_settings = os.environ.get('HIDE_LLM_SETTINGS', 'false') == 'true'
+
+    # Always use filestore for OSS mode unless overridden
+    storage_type = os.environ.get('OPENHANDS_STORAGE_TYPE', 'filestore')
+    
+    # Use standard EventStream for OSS mode unless overridden
+    event_stream_class = os.environ.get(
+        'EVENT_STREAM_CLASS',
+        'openhands.events.stream.EventStream'
+    )
     settings_store_class: str = (
         'openhands.storage.settings.file_settings_store.FileSettingsStore'
     )
@@ -26,7 +28,7 @@ class ServerConfig(ServerConfigInterface):
         'openhands.storage.secrets.file_secrets_store.FileSecretsStore'
     )
     conversation_store_class: str = (
-        'openhands.storage.conversation.db_conversation_store.DBConversationStore'
+        'openhands.storage.conversation.file_conversation_store.FileConversationStore'
     )
     conversation_manager_class: str = os.environ.get(
         'CONVERSATION_MANAGER_CLASS',
@@ -44,7 +46,6 @@ class ServerConfig(ServerConfigInterface):
     def get_config(self):
         config = {
             'APP_MODE': self.app_mode,
-            'EVENT_STREAM_CLASS': self.event_stream_class,
             'GITHUB_CLIENT_ID': self.github_client_id,
             'POSTHOG_CLIENT_KEY': self.posthog_client_key,
             'FEATURE_FLAGS': {

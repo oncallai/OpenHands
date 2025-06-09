@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 
 from openhands.core.config import load_openhands_config
 from openhands.core.config.openhands_config import OpenHandsConfig
+from openhands.core.logger import openhands_logger as logger
 from openhands.events.stream import EventStream
 from openhands.server.config.server_config import ServerConfig, load_server_config
 from openhands.server.conversation_manager.conversation_manager import (
@@ -12,38 +13,29 @@ from openhands.server.conversation_manager.conversation_manager import (
 )
 from openhands.server.monitoring import MonitoringListener
 from openhands.server.types import ServerConfigInterface
-from openhands.storage import get_db_store, get_file_store
+from openhands.storage import get_file_store
 from openhands.storage.conversation.conversation_store import ConversationStore
 from openhands.storage.secrets.secrets_store import SecretsStore
 from openhands.storage.settings.settings_store import SettingsStore
 from openhands.storage.store import Store
 from openhands.utils.import_utils import get_impl
-from openhands.utils.import_utils import get_impl as get_event_stream_impl
 
 load_dotenv()
 
 config: OpenHandsConfig = load_openhands_config()
+logger.info(f'Using config class {config}')
 server_config_interface: ServerConfigInterface = load_server_config()
 assert isinstance(server_config_interface, ServerConfig), (
     'Loaded server config interface is not a ServerConfig, despite this being assumed'
 )
 server_config: ServerConfig = server_config_interface
-
-
-def get_store():
-    if server_config.storage_type == 'database':
-        return get_db_store()
-    else:
-        return get_file_store(
-            config.file_store,
-            config.file_store_path,
-            config.file_store_web_hook_url,
-            config.file_store_web_hook_headers,
-        )
-
-
-store: Store = get_store()
-
+logger.info(f'Using server config class {server_config.conversation_manager_class}')
+store: Store = get_file_store(
+    config.file_store,
+    config.file_store_path,
+    config.file_store_web_hook_url,
+    config.file_store_web_hook_headers,
+)
 
 client_manager = None
 redis_host = os.environ.get('REDIS_HOST')
@@ -83,4 +75,4 @@ ConversationStoreImpl = get_impl(
     server_config.conversation_store_class,
 )
 
-EventStreamImpl = get_event_stream_impl(EventStream, server_config.event_stream_class)
+EventStreamImpl = get_impl(EventStream, server_config.event_stream_class)

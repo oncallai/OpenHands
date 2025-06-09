@@ -54,7 +54,13 @@ class ClusteredConversationManager(StandaloneConversationManager):
 
     async def __aenter__(self):
         await super().__aenter__()
-        self._redis_listen_task = asyncio.create_task(self._redis_subscribe())
+        logger.info('Starting Redis listen task')
+        redis_client = self._get_redis_client()
+        if redis_client:
+            logger.info(f'Redis client available, creating subscription task')
+            self._redis_listen_task = asyncio.create_task(self._redis_subscribe())
+        else:
+            logger.warning('No Redis client available, clustered mode may not work properly')
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback):
@@ -64,31 +70,44 @@ class ClusteredConversationManager(StandaloneConversationManager):
         await super().__aexit__(exc_type, exc_value, traceback)
 
     def _get_redis_client(self):
-        return getattr(self.sio.manager, 'redis', None)
+        redis_client = getattr(self.sio.manager, 'redis', None)
+        logger.info(f'Redis client obtained: {redis_client is not None}')
+        return redis_client
 
     async def _redis_subscribe(self):
         """
         We use a redis backchannel to send actions between server nodes
         """
-        logger.debug('_redis_subscribe')
+        logger.info('Starting Redis subscription')
         redis_client = self._get_redis_client()
-        pubsub = redis_client.pubsub()
-        await pubsub.subscribe('session_msg')
-        while should_continue():
-            try:
-                message = await pubsub.get_message(
-                    ignore_subscribe_messages=True, timeout=5
-                )
-                if message:
-                    await self._process_message(message)
-            except asyncio.CancelledError:
-                return
-            except Exception as e:
+        if not redis_client:
+            logger.error('Failed to get Redis client for subscription')
+            return
+        
+        try:
+            pubsub = redis_client.pubsub()
+            logger.info('Created Redis pubsub object')
+            await pubsub.subscribe('session_msg')
+            logger.info('Successfully subscribed to session_msg channel')
+            while should_continue():
                 try:
-                    asyncio.get_running_loop()
-                    logger.error(f'error_reading_from_redis:{str(e)}')
-                except RuntimeError:
-                    return  # Loop has been shut down
+                    message = await pubsub.get_message(
+                        ignore_subscribe_messages=True, timeout=5
+                    )
+                    if message:
+                        logger.info(f'Received Redis message: {message}')
+                        await self._process_message(message)
+                except asyncio.CancelledError:
+                    return
+                except Exception as e:
+                    try:
+                        asyncio.get_running_loop()
+                        logger.error(f'error_reading_from_redis:{str(e)}')
+                    except RuntimeError:
+                        return  # Loop has been shut down
+        except Exception as e:
+            logger.error(f'Redis subscription error: {str(e)}')
+            return
 
     async def _process_message(self, message: dict):
         data = json.loads(message['data'])
@@ -421,4 +440,5 @@ class ClusteredConversationManager(StandaloneConversationManager):
         server_config: ServerConfig,
         monitoring_listener: MonitoringListener | None,
     ) -> ConversationManager:
+        logger.info(f'ClusteredConversationManager.get_instance')
         return ClusteredConversationManager(sio, config, file_store, server_config, monitoring_listener)

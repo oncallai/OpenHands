@@ -35,7 +35,7 @@ class ConversationStoreError(Exception):
     pass
 
 
-class DBConversationStore(ConversationStore):
+class SaasConversationStore(ConversationStore):
     """
     Database-backed conversation store with async execution and proper error handling.
 

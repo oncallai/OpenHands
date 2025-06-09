@@ -1,13 +1,13 @@
 from typing import Any, Iterable
 
-from openhands.events.db_event_store import DBEventStore
 from openhands.events.event import Event
 from openhands.events.stream import EventStream
+from events.saas_event_store import SaasEventStore
 
 
-class DBEventStream(EventStream):
+class SaasEventStream(EventStream):
     """
-    An EventStream that uses DBEventStore for persistent event storage,
+    An EventStream that uses SaasEventStore for persistent event storage,
     but inherits all async/subscriber/queue logic from EventStream.
     """
 
@@ -17,7 +17,7 @@ class DBEventStream(EventStream):
         # Call EventStream constructor (file_store is still needed for interface, but will not be used for persistence)
         super().__init__(sid, file_store, user_id)
         # Compose with DBEventStore for persistence
-        self._db_event_store = DBEventStore(sid, file_store, user_id, cache_size)
+        self._saas_event_store = SaasEventStore(sid, file_store, user_id, cache_size)
         self.sid = sid
         self.user_id = user_id
 
@@ -37,13 +37,13 @@ class DBEventStream(EventStream):
         if source is not None:
             event._source = source  # type: ignore [attr-defined]
         with self._lock:
-            event._id = self._db_event_store.cur_id  # type: ignore [attr-defined]
-            self._db_event_store.cur_id += 1
-        self._db_event_store.add_event(event)
+            event._id = self._saas_event_store.cur_id  # type: ignore [attr-defined]
+            self._saas_event_store.cur_id += 1
+        self._saas_event_store.add_event(event)
         self._queue.put(event)
 
     def get_event(self, event_index: int) -> Event:
-        return self._db_event_store.get_event(event_index)
+        return self._saas_event_store.get_event(event_index)
 
     def search_events(
         self,
@@ -53,7 +53,7 @@ class DBEventStream(EventStream):
         filter: Any = None,
         limit: int | None = None,
     ) -> Iterable[Event]:
-        return self._db_event_store.search_events(
+        return self._saas_event_store.search_events(
             start_id=start_id,
             end_id=end_id,
             reverse=reverse,
@@ -62,13 +62,13 @@ class DBEventStream(EventStream):
         )
 
     def delete_event(self, event_index: int) -> None:
-        return self._db_event_store.delete_event(event_index)
+        return self._saas_event_store.delete_event(event_index)
 
     def get_latest_event(self) -> Event:
-        return self._db_event_store.get_latest_event()
+        return self._saas_event_store.get_latest_event()
 
     def get_latest_event_id(self) -> int:
-        return self._db_event_store.get_latest_event_id()
+        return self._saas_event_store.get_latest_event_id()
 
     # ---- File/caching-specific method overrides ----
     def _store_cache_page(self, current_write_page: list[dict]):

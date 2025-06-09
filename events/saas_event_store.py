@@ -6,7 +6,7 @@ from openhands.events.serialization.event import event_from_dict, event_to_dict
 from openhands.storage.db import DBStore
 
 
-class DBEventStore(EventStoreABC):
+class SaasEventStore(EventStoreABC):
     """
     Event store backed by a database event store (e.g., PostgresStore).
     Accepts any Store that implements the event methods (write_event, read_event, list_events, delete_event).

@@ -47,7 +47,7 @@ class AgentSession:
     sid: str
     user_id: str | None
     event_stream: EventStream
-    fStore: Store
+    store: Store
     controller: AgentController | None = None
     runtime: Runtime | None = None
     security_analyzer: SecurityAnalyzer | None = None
@@ -60,7 +60,7 @@ class AgentSession:
     def __init__(
         self,
         sid: str,
-        fStore: Store,
+        store: Store,
         status_callback: Callable | None = None,
         user_id: str | None = None,
     ) -> None:
@@ -68,13 +68,12 @@ class AgentSession:
 
         Parameters:
         - sid: The session ID
-        - fStore: Instance of the Store
+        - store: Instance of the Store
         """
 
         self.sid = sid
-        from openhands.server.shared import EventStreamImpl
-        self.event_stream = EventStreamImpl(sid, fStore, user_id)
-        self.fStore = fStore
+        self.event_stream = EventStream(sid, store, user_id)
+        self.store = store
         self._status_callback = status_callback
         self.user_id = user_id
         self.logger = OpenHandsLoggerAdapter(
@@ -226,7 +225,7 @@ class AgentSession:
             self.event_stream.close()
         if self.controller is not None:
             end_state = self.controller.get_state()
-            end_state.save_to_session(self.sid, self.fStore, self.user_id)
+            end_state.save_to_session(self.sid, self.store, self.user_id)
             await self.controller.close()
         if self.runtime is not None:
             EXECUTOR.submit(self.runtime.close)
@@ -481,7 +480,7 @@ class AgentSession:
         # if we have events in the stream.
         try:
             restored_state = State.restore_from_session(
-                self.sid, self.fStore, self.user_id
+                self.sid, self.store, self.user_id
             )
             self.logger.debug(f'Restored state from session, sid: {self.sid}')
         except Exception as e:
