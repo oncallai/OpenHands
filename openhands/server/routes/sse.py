@@ -89,7 +89,7 @@ async def stream_conversation_events(
         connection_id = f"sse_{uuid.uuid4()}"
 
         # Initialize conversation settings
-        conversation_init_data = await setup_init_convo_settings(user_id, providers_set)
+        conversation_init_data = await setup_init_convo_settings(user_id, conversation_id, providers_set)
 
         # Join conversation via SSE manager
         agent_loop_info = await sse_conversation_manager.join_conversation(
