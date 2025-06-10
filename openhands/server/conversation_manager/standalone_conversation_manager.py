@@ -11,17 +11,17 @@ from openhands.core.exceptions import AgentRuntimeUnavailableError
 from openhands.core.logger import openhands_logger as logger
 from openhands.core.schema.agent import AgentState
 from openhands.events.action import MessageAction
-from openhands.events.stream import EventStreamSubscriber, session_exists
+from openhands.events.stream import EventStream,EventStreamSubscriber, session_exists
 from openhands.server.config.server_config import ServerConfig
 from openhands.server.data_models.agent_loop_info import AgentLoopInfo
 from openhands.server.monitoring import MonitoringListener
 from openhands.server.session.agent_session import WAIT_TIME_BEFORE_CLOSE
 from openhands.server.session.conversation import ServerConversation
 from openhands.server.session.session import ROOM_KEY, Session
+from openhands.storage.store import Store
 from openhands.storage.conversation.conversation_store import ConversationStore
 from openhands.storage.data_models.conversation_metadata import ConversationMetadata
 from openhands.storage.data_models.settings import Settings
-from openhands.storage.files import FileStore
 from openhands.utils.async_utils import GENERAL_TIMEOUT, call_async_from_sync, wait_all
 from openhands.utils.conversation_summary import (
     auto_generate_title,
@@ -45,10 +45,10 @@ class StandaloneConversationManager(ConversationManager):
 
     sio: socketio.AsyncServer
     config: OpenHandsConfig
-    file_store: FileStore
+    file_store: Store
     server_config: ServerConfig
-    # Defaulting monitoring_listener for temp backward compatibility.
-    monitoring_listener: MonitoringListener = MonitoringListener()
+    # Monitoring listener can be None and will default to a no-op implementation
+    monitoring_listener: MonitoringListener | None = field(default_factory=MonitoringListener)
     _local_agent_loops_by_sid: dict[str, Session] = field(default_factory=dict)
     _local_connection_id_to_session_id: dict[str, str] = field(default_factory=dict)
     _active_conversations: dict[str, tuple[ServerConversation, int]] = field(
@@ -325,6 +325,14 @@ class StandaloneConversationManager(ConversationManager):
             pass  # Already subscribed - take no action
         return session
 
+    async def _get_event_stream(self, sid: str) -> EventStream | None:
+        logger.info(f'_get_event_stream:{sid}')
+        session = self._local_agent_loops_by_sid.get(sid)
+        if session:
+            logger.info(f'found_local_agent_loop:{sid}')
+            return session.agent_session.event_stream
+        return None
+
     async def send_to_event_stream(self, connection_id: str, data: dict):
         # If there is a local session running, send to that
         sid = self._local_connection_id_to_session_id.get(connection_id)
@@ -388,7 +396,7 @@ class StandaloneConversationManager(ConversationManager):
         cls,
         sio: socketio.AsyncServer,
         config: OpenHandsConfig,
-        file_store: FileStore,
+        file_store: Store,
         server_config: ServerConfig,
         monitoring_listener: MonitoringListener | None,
     ) -> ConversationManager:

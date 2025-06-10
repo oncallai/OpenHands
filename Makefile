@@ -1,6 +1,11 @@
 SHELL=/usr/bin/env bash
 # Makefile for OpenHands project
 
+.PHONY: migrate-db
+migrate-db:
+	@echo "Running database migration..."
+	python3 openhands/storage/migration/run_migration.py
+
 # Variables
 BACKEND_HOST ?= "127.0.0.1"
 BACKEND_PORT = 3000
@@ -324,6 +329,9 @@ help:
 	@echo "  $(GREEN)setup-config$(RESET)        - Setup the configuration for OpenHands by providing LLM API key,"
 	@echo "                        LLM Model name, and workspace directory."
 	@echo "  $(GREEN)start-backend$(RESET)       - Start the backend server for the OpenHands project."
+	@echo "  $(GREEN)start-redis$(RESET)          - Start a Redis container for clustered mode."
+	@echo "  $(GREEN)stop-redis$(RESET)           - Stop the Redis container."
+	@echo "  $(GREEN)start-saas-backend$(RESET)   - Start the SaaS backend server for the OpenHands project (automatically starts Redis)."
 	@echo "  $(GREEN)start-frontend$(RESET)      - Start the frontend server for the OpenHands project."
 	@echo "  $(GREEN)run$(RESET)                 - Run the OpenHands application, starting both backend and frontend servers."
 	@echo "                        Backend Log file will be stored in the 'logs' directory."
@@ -331,5 +339,34 @@ help:
 	@echo "  $(GREEN)docker-run$(RESET)          - Run the OpenHands application, starting both backend and frontend servers in Docker."
 	@echo "  $(GREEN)help$(RESET)                - Display this help message, providing information on available targets."
 
+# Start Redis for SaaS backend
+start-redis:
+	@echo "$(YELLOW)Starting Redis container...$(RESET)"
+	@if [ -z "$$(docker ps -q -f name=openhands-redis)" ]; then \
+		if [ -z "$$(docker ps -aq -f name=openhands-redis)" ]; then \
+			docker run --name openhands-redis -p 6379:6379 -d redis:alpine; \
+		else \
+			docker start openhands-redis; \
+		fi; \
+	else \
+		echo "$(GREEN)Redis container already running.$(RESET)"; \
+	fi
+	@echo "$(GREEN)Redis is running on localhost:6379$(RESET)"
+
+# Stop Redis container
+stop-redis:
+	@echo "$(YELLOW)Stopping Redis container...$(RESET)"
+	@if [ ! -z "$$(docker ps -q -f name=openhands-redis)" ]; then \
+		docker stop openhands-redis; \
+		echo "$(GREEN)Redis container stopped.$(RESET)"; \
+	else \
+		echo "$(YELLOW)Redis container is not running.$(RESET)"; \
+	fi
+
+# Start SaaS backend
+start-saas-backend: start-redis
+	@echo "$(YELLOW)Starting SaaS backend...$(RESET)"
+	@REDIS_HOST="localhost" poetry run uvicorn saas_server:app --host $(BACKEND_HOST) --port $(BACKEND_PORT) --reload
+
 # Phony targets
-.PHONY: build check-dependencies check-system check-python check-npm check-nodejs check-docker check-poetry install-python-dependencies install-frontend-dependencies install-pre-commit-hooks lint-backend lint-frontend lint test-frontend test build-frontend start-backend start-frontend _run_setup run run-wsl setup-config setup-config-prompts setup-config-basic openhands-cloud-run docker-dev docker-run clean help
+.PHONY: build check-dependencies check-system check-python check-npm check-nodejs check-docker check-poetry install-python-dependencies install-frontend-dependencies install-pre-commit-hooks lint-backend lint-frontend lint test-frontend test build-frontend start-backend start-frontend start-redis stop-redis start-saas-backend _run_setup run run-wsl setup-config setup-config-prompts setup-config-basic openhands-cloud-run docker-dev docker-run clean help

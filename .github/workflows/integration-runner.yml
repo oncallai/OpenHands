@@ -1,16 +1,13 @@
-name: Run Integration Tests
+# DISABLED: This workflow is temporarily disabled in favor of GCR builds
+name: DISABLED_Integration Runner
 
 on:
-  pull_request:
-    types: [labeled]
   workflow_dispatch:
     inputs:
       reason:
         description: 'Reason for manual trigger'
         required: true
         default: ''
-  schedule:
-    - cron: '30 22 * * *'  # Runs at 10:30pm UTC every day
 
 env:
   N_PROCESSES: 10 # Global configuration for number of parallel processes for evaluation

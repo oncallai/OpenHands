@@ -1,5 +1,13 @@
-# Workflow that runs frontend unit tests
-name: Run Frontend Unit Tests
+# DISABLED: This workflow is temporarily disabled in favor of GCR builds
+name: DISABLED_Frontend Unit Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for manual trigger'
+        required: true
+        default: ''
 
 # * Always run on "main"
 # * Run on PRs that have changes in the "frontend" folder or this workflow

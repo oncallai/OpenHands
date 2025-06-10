@@ -7,12 +7,12 @@ from openhands.events.event import Event, EventSource
 from openhands.events.event_filter import EventFilter
 from openhands.events.event_store_abc import EventStoreABC
 from openhands.events.serialization.event import event_from_dict
-from openhands.storage.files import FileStore
 from openhands.storage.locations import (
     get_conversation_dir,
     get_conversation_event_filename,
     get_conversation_events_dir,
 )
+from openhands.storage.store import Store
 from openhands.utils.shutdown_listener import should_continue
 
 
@@ -47,7 +47,7 @@ class EventStore(EventStoreABC):
     """
 
     sid: str
-    file_store: FileStore
+    file_store: Store
     user_id: str | None
     cur_id: int = -1  # We fix this in post init if it is not specified
     cache_size: int = 25

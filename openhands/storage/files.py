@@ -1,7 +1,9 @@
 from abc import abstractmethod
 
+from openhands.storage.store import Store
 
-class FileStore:
+
+class FileStore(Store):
     @abstractmethod
     def write(self, path: str, contents: str | bytes) -> None:
         pass
