@@ -1,10 +1,13 @@
-# Run evaluation on a PR
-name: Run Eval
+# DISABLED: This workflow is temporarily disabled in favor of GCR builds
+name: DISABLED_Run Evaluation
 
-# Runs when a PR is labeled with one of the "run-eval-" labels
 on:
-  pull_request:
-    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for manual trigger'
+        required: true
+        default: ''
 
 jobs:
   trigger-job:

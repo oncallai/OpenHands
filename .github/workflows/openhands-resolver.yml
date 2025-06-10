@@ -1,6 +1,14 @@
-name: Auto-Fix Tagged Issue with OpenHands
+# DISABLED: This workflow is temporarily disabled in favor of GCR builds
+name: DISABLED_OpenHands Resolver
 
 on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for manual trigger'
+        required: true
+        default: ''
+
   workflow_call:
     inputs:
       max_iterations:

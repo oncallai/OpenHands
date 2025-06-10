@@ -1,12 +1,17 @@
-# DISABLED: This workflow is temporarily disabled in favor of GCR builds
-# Original name: Docker
-name: DISABLED_Docker
+# Workflow that builds, tests and then pushes the OpenHands and runtime docker images to the GCR repository
+name: GCR Docker Build
 
 # Always run on "main"
 # Always run on tags
 # Always run on PRs
 # Can also be triggered manually
 on:
+  push:
+    branches:
+      - main
+    tags:
+      - '*'
+  pull_request:
   workflow_dispatch:
     inputs:
       reason:
@@ -21,6 +26,8 @@ concurrency:
 
 env:
   RELEVANT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  GCR_REGISTRY: us-docker.pkg.dev
+  GCR_PROJECT: kustodian-dev01
 
 jobs:
   define-matrix:
@@ -48,7 +55,7 @@ jobs:
           echo "base_image=$json" >> "$GITHUB_OUTPUT"
 
   # Builds the OpenHands Docker images
-  ghcr_build_app:
+  gcr_build_app:
     name: Build App Image
     runs-on: blacksmith-4vcpu-ubuntu-2204
     permissions:
@@ -66,12 +73,12 @@ jobs:
         uses: docker/setup-qemu-action@v3.6.0
         with:
           image: tonistiigi/binfmt:latest
-      - name: Login to GHCR
+      - name: Login to GCR
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          registry: ${{ env.GCR_REGISTRY }}
+          username: _json_key
+          password: ${{ secrets.GCP_DEV_REGISTRY_SA_KEY }}
       - name: Set up Docker Buildx
         id: buildx
         uses: docker/setup-buildx-action@v3
@@ -81,23 +88,23 @@ jobs:
       - name: Build and push app image
         if: "!github.event.pull_request.head.repo.fork"
         run: |
-          ./containers/build.sh -i openhands -o ${{ env.REPO_OWNER }} --push
+          ./containers/build.sh -i openhands -o ${{ env.GCR_PROJECT }} -r ${{ env.GCR_REGISTRY }} --push
       - name: Build app image
         if: "github.event.pull_request.head.repo.fork"
         run: |
-          ./containers/build.sh -i openhands -o ${{ env.REPO_OWNER }} --load
+          ./containers/build.sh -i openhands -o ${{ env.GCR_PROJECT }} -r ${{ env.GCR_REGISTRY }} --load
       - name: Get hash in App Image
         id: get_hash_in_app_image
         run: |
           # Run the build script in the app image
-          docker run -e SANDBOX_USER_ID=0 -v /var/run/docker.sock:/var/run/docker.sock ghcr.io/${{ env.REPO_OWNER }}/openhands:${{ env.RELEVANT_SHA }} /bin/bash -c "mkdir -p containers/runtime; python3 openhands/runtime/utils/runtime_build.py --base_image ${{ env.BASE_IMAGE_FOR_HASH_EQUIVALENCE_TEST }} --build_folder containers/runtime --force_rebuild" 2>&1 | tee docker-outputs.txt
+          docker run -e SANDBOX_USER_ID=0 -v /var/run/docker.sock:/var/run/docker.sock ${{ env.GCR_REGISTRY }}/${{ env.GCR_PROJECT }}/openhands:${{ env.RELEVANT_SHA }} /bin/bash -c "mkdir -p containers/runtime; python3 openhands/runtime/utils/runtime_build.py --base_image ${{ env.BASE_IMAGE_FOR_HASH_EQUIVALENCE_TEST }} --build_folder containers/runtime --force_rebuild" 2>&1 | tee docker-outputs.txt
           # Get the hash from the build script
           hash_from_app_image=$(cat docker-outputs.txt | grep "Hash for docker build directory" | awk -F "): " '{print $2}' | uniq | head -n1)
           echo "hash_from_app_image=$hash_from_app_image" >> $GITHUB_OUTPUT
           echo "Hash from app image: $hash_from_app_image"
 
   # Builds the runtime Docker images
-  ghcr_build_runtime:
+  gcr_build_runtime:
     name: Build Image
     runs-on: blacksmith-4vcpu-ubuntu-2204
     permissions:
@@ -116,12 +123,12 @@ jobs:
         uses: docker/setup-qemu-action@v3.6.0
         with:
           image: tonistiigi/binfmt:latest
-      - name: Login to GHCR
+      - name: Login to GCR
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          registry: ${{ env.GCR_REGISTRY }}
+          username: _json_key
+          password: ${{ secrets.GCP_DEV_REGISTRY_SA_KEY }}
       - name: Set up Docker Buildx
         id: buildx
         uses: docker/setup-buildx-action@v3
@@ -155,13 +162,13 @@ jobs:
         if: github.event.pull_request.head.repo.fork != true
         shell: bash
         run: |
-          ./containers/build.sh -i runtime -o ${{ env.REPO_OWNER }} -t ${{ matrix.base_image.tag }} --dry
+          ./containers/build.sh -i runtime -o ${{ env.GCR_PROJECT }} -r ${{ env.GCR_REGISTRY }} -t ${{ matrix.base_image.tag }} --dry
 
           DOCKER_BUILD_JSON=$(jq -c . < docker-build-dry.json)
           echo "DOCKER_TAGS=$(echo "$DOCKER_BUILD_JSON" | jq -r '.tags | join(",")')" >> $GITHUB_ENV
           echo "DOCKER_PLATFORM=$(echo "$DOCKER_BUILD_JSON" | jq -r '.platform')" >> $GITHUB_ENV
           echo "DOCKER_BUILD_ARGS=$(echo "$DOCKER_BUILD_JSON" | jq -r '.build_args | join(",")')" >> $GITHUB_ENV
-      - name: Build and push runtime image ${{ matrix.base_image.image }}
+      - name: Build and push runtime image
         if: github.event.pull_request.head.repo.fork != true
         uses: useblacksmith/build-push-action@v1
         with:
@@ -171,12 +178,12 @@ jobs:
           build-args: ${{ env.DOCKER_BUILD_ARGS }}
           context: containers/runtime
           provenance: false
-      # Forked repos can't push to GHCR, so we just build in order to populate the cache for rebuilding
+      # Forked repos can't push to GCR, so we just build in order to populate the cache for rebuilding
       - name: Build runtime image ${{ matrix.base_image.image }} for fork
         if: github.event.pull_request.head.repo.fork
         uses: useblacksmith/build-push-action@v1
         with:
-          tags: ghcr.io/${{ env.REPO_OWNER }}/runtime:${{ env.RELEVANT_SHA }}-${{ matrix.base_image.tag }}
+          tags: ${{ env.GCR_REGISTRY }}/${{ env.GCR_PROJECT }}/runtime:${{ env.RELEVANT_SHA }}-${{ matrix.base_image.tag }}
           context: containers/runtime
       - name: Upload runtime source for fork
         if: github.event.pull_request.head.repo.fork
@@ -188,7 +195,7 @@ jobs:
   verify_hash_equivalence_in_runtime_and_app:
     name: Verify Hash Equivalence in Runtime and Docker images
     runs-on: blacksmith-4vcpu-ubuntu-2204
-    needs: [ghcr_build_runtime, ghcr_build_app]
+    needs: [gcr_build_runtime, gcr_build_app]
     strategy:
       fail-fast: false
       matrix:
@@ -219,8 +226,8 @@ jobs:
         run: make install-python-dependencies POETRY_GROUP=main INSTALL_PLAYWRIGHT=0
       - name: Get hash in App Image
         run: |
-          echo "Hash from app image: ${{ needs.ghcr_build_app.outputs.hash_from_app_image }}"
-          echo "hash_from_app_image=${{ needs.ghcr_build_app.outputs.hash_from_app_image }}" >> $GITHUB_ENV
+          echo "Hash from app image: ${{ needs.gcr_build_app.outputs.hash_from_app_image }}"
+          echo "hash_from_app_image=${{ needs.gcr_build_app.outputs.hash_from_app_image }}" >> $GITHUB_ENV
 
       - name: Get hash using code (development mode)
         run: |
@@ -243,7 +250,7 @@ jobs:
   # Run unit tests with the Docker runtime Docker images as root
   test_runtime_root:
     name: RT Unit Tests (Root)
-    needs: [ghcr_build_runtime, define-matrix]
+    needs: [gcr_build_runtime, define-matrix]
     runs-on: blacksmith-8vcpu-ubuntu-2204
     strategy:
       fail-fast: false
@@ -263,13 +270,13 @@ jobs:
       - name: Lowercase Repository Owner
         run: |
           echo REPO_OWNER=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]') >> $GITHUB_ENV
-      # Forked repos can't push to GHCR, so we need to rebuild using cache
+      # Forked repos can't push to GCR, so we need to rebuild using cache
       - name: Build runtime image ${{ matrix.base_image.image }} for fork
         if: github.event.pull_request.head.repo.fork
         uses: useblacksmith/build-push-action@v1
         with:
           load: true
-          tags: ghcr.io/${{ env.REPO_OWNER }}/runtime:${{ env.RELEVANT_SHA }}-${{ matrix.base_image.tag }}
+          tags: ${{ env.GCR_REGISTRY }}/${{ env.GCR_PROJECT }}/runtime:${{ env.RELEVANT_SHA }}-${{ matrix.base_image.tag }}
           context: containers/runtime
       - name: Cache Poetry dependencies
         uses: useblacksmith/cache@v5
@@ -297,7 +304,7 @@ jobs:
           # Install to be able to retry on failures for flaky tests
           poetry run pip install pytest-rerunfailures
 
-          image_name=ghcr.io/${{ env.REPO_OWNER }}/runtime:${{ env.RELEVANT_SHA }}-${{ matrix.base_image.tag }}
+          image_name=${{ env.GCR_REGISTRY }}/${{ env.GCR_PROJECT }}/runtime:${{ env.RELEVANT_SHA }}-${{ matrix.base_image.tag }}
 
           # Setting RUN_AS_OPENHANDS to false means use root.
           # That should mean SANDBOX_USER_ID is ignored but some tests do not check for RUN_AS_OPENHANDS.
@@ -315,7 +322,7 @@ jobs:
   test_runtime_oh:
     name: RT Unit Tests (openhands)
     runs-on: blacksmith-8vcpu-ubuntu-2204
-    needs: [ghcr_build_runtime, define-matrix]
+    needs: [gcr_build_runtime, define-matrix]
     strategy:
       matrix:
         base_image: ${{ fromJson(needs.define-matrix.outputs.base_image) }}
@@ -333,13 +340,13 @@ jobs:
       - name: Lowercase Repository Owner
         run: |
           echo REPO_OWNER=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]') >> $GITHUB_ENV
-      # Forked repos can't push to GHCR, so we need to rebuild using cache
+      # Forked repos can't push to GCR, so we need to rebuild using cache
       - name: Build runtime image ${{ matrix.base_image.image }} for fork
         if: github.event.pull_request.head.repo.fork
         uses: useblacksmith/build-push-action@v1
         with:
           load: true
-          tags: ghcr.io/${{ env.REPO_OWNER }}/runtime:${{ env.RELEVANT_SHA }}-${{ matrix.base_image.tag }}
+          tags: ${{ env.GCR_REGISTRY }}/${{ env.GCR_PROJECT }}/runtime:${{ env.RELEVANT_SHA }}-${{ matrix.base_image.tag }}
           context: containers/runtime
       - name: Cache Poetry dependencies
         uses: useblacksmith/cache@v5
@@ -367,7 +374,7 @@ jobs:
           # Install to be able to retry on failures for flaky tests
           poetry run pip install pytest-rerunfailures
 
-          image_name=ghcr.io/${{ env.REPO_OWNER }}/runtime:${{ env.RELEVANT_SHA }}-${{ matrix.base_image.tag }}
+          image_name=${{ env.GCR_REGISTRY }}/${{ env.GCR_PROJECT }}/runtime:${{ env.RELEVANT_SHA }}-${{ matrix.base_image.tag }}
 
           TEST_RUNTIME=docker \
           SANDBOX_USER_ID=$(id -u) \
@@ -401,10 +408,11 @@ jobs:
         run: |
           echo "Some runtime tests failed or were cancelled"
           exit 1
+
   update_pr_description:
     name: Update PR Description
     if: github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork && github.actor != 'dependabot[bot]'
-    needs: [ghcr_build_runtime]
+    needs: [gcr_build_runtime]
     runs-on: blacksmith-4vcpu-ubuntu-2204
     steps:
       - name: Checkout
@@ -426,9 +434,9 @@ jobs:
             -p 3000:3000 \
             -v /var/run/docker.sock:/var/run/docker.sock \
             --add-host host.docker.internal:host-gateway \
-            -e SANDBOX_RUNTIME_CONTAINER_IMAGE=docker.all-hands.dev/all-hands-ai/runtime:$SHORT_SHA-nikolaik \
+            -e SANDBOX_RUNTIME_CONTAINER_IMAGE=${{ env.GCR_REGISTRY }}/${{ env.GCR_PROJECT }}/runtime:$SHORT_SHA-nikolaik \
             --name openhands-app-$SHORT_SHA \
-            docker.all-hands.dev/all-hands-ai/openhands:$SHORT_SHA"
+            ${{ env.GCR_REGISTRY }}/${{ env.GCR_PROJECT }}/openhands:$SHORT_SHA"
 
           PR_BODY=$(gh pr view $PR_NUMBER --json body --jq .body)
 
