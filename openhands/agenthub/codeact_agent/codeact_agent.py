@@ -187,45 +187,45 @@ class CodeActAgent(Agent):
             'tools': check_tools(self.tools, self.llm.config),
             'extra_body': {'metadata': state.to_llm_metadata(agent_name=self.name)}
         }
-        
+
         # Debug: Print the formatted messages that are actually sent to the LLM
-        logger.info("===== CODEACT AGENT FORMATTED MESSAGES =====\n")
+        logger.debug("===== CODEACT AGENT FORMATTED MESSAGES =====\n")
         import json
         for i, msg in enumerate(formatted_messages):
-            logger.info(f"MESSAGE {i+1}:")
-            logger.info(json.dumps(msg, indent=2))
-            logger.info("---\n")
-        logger.info("===== END OF FORMATTED MESSAGES =====\n")
-        
+            logger.debug(f"MESSAGE {i+1}:")
+            logger.debug(json.dumps(msg, indent=2))
+            logger.debug("---\n")
+        logger.debug("===== END OF FORMATTED MESSAGES =====\n")
+
         # Debug: Log the complete params dictionary
-        logger.info("===== COMPLETE LLM REQUEST PARAMS =====\n")
+        logger.debug("===== COMPLETE LLM REQUEST PARAMS =====\n")
         try:
             # Make a copy of params to avoid modifying the original
             log_params = params.copy()
             # We already logged the messages in detail, so reference that to avoid duplication
             log_params['messages'] = f"[{len(formatted_messages)} messages - see above for details]"
-            
+
             # Log the tools section
             if 'tools' in log_params and log_params['tools']:
-                logger.info("TOOLS:")
-                logger.info(json.dumps(log_params['tools'], indent=2, default=str))
-            
+                logger.debug("TOOLS:")
+                logger.debug(json.dumps(log_params['tools'], indent=2, default=str))
+
             # Log the extra_body and metadata
             if 'extra_body' in log_params:
-                logger.info("EXTRA_BODY:")
-                logger.info(json.dumps(log_params['extra_body'], indent=2, default=str))
-            
+                logger.debug("EXTRA_BODY:")
+                logger.debug(json.dumps(log_params['extra_body'], indent=2, default=str))
+
             # Log any other params
             other_params = {k: v for k, v in log_params.items() if k not in ['messages', 'tools', 'extra_body']}
             if other_params:
-                logger.info("OTHER PARAMS:")
-                logger.info(json.dumps(other_params, indent=2, default=str))
-                
+                logger.debug("OTHER PARAMS:")
+                logger.debug(json.dumps(other_params, indent=2, default=str))
+
         except Exception as e:
             logger.error(f"Error logging params: {e}")
-            
-        logger.info("===== END OF REQUEST PARAMS =====\n")
-        
+
+        logger.debug("===== END OF REQUEST PARAMS =====\n")
+
         response = self.llm.completion(**params)
         logger.debug(f'Response from LLM: {response}')
         actions = self.response_to_actions(response)
