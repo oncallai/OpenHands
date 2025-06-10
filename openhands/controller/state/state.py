@@ -5,9 +5,11 @@ import os
 import pickle
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple, Type, cast
+from openhands.storage.store import Store
 
 import openhands
+from openhands.controller.state.incident import Incident
 from openhands.core.logger import openhands_logger as logger
 from openhands.core.schema import AgentState
 from openhands.events.action import (
@@ -104,22 +106,27 @@ class State:
     extra_data: dict[str, Any] = field(default_factory=dict)
     last_error: str = ''
 
+    # Incident object used by the ArchitectAgent and potentially other agents
+    incident: Optional[Incident] = None
+
     def save_to_session(
-        self, sid: str, file_store: FileStore, user_id: str | None
+        self, sid: str, store: Store, user_id: str | None = None
     ) -> None:
         pickled = pickle.dumps(self)
         logger.debug(f'Saving state to session {sid}:{self.agent_state}')
         encoded = base64.b64encode(pickled).decode('utf-8')
+        logger.info(f"*******called********")
         try:
-            file_store.write(
-                get_conversation_agent_state_filename(sid, user_id), encoded
-            )
+            # Use session id as key for DBStore, file path for others
+            from openhands.storage.db import DBStore
+            key = sid if isinstance(store, DBStore) else get_conversation_agent_state_filename(sid, user_id)
+            store.write(key, encoded)
 
             # see if state is in the old directory on saas/remote use cases and delete it.
-            if user_id:
+            if user_id and not isinstance(store, DBStore):
                 filename = get_conversation_agent_state_filename(sid)
                 try:
-                    file_store.delete(filename)
+                    store.delete(filename)
                 except Exception:
                     pass
         except Exception as e:
@@ -128,31 +135,36 @@ class State:
 
     @staticmethod
     def restore_from_session(
-        sid: str, file_store: FileStore, user_id: str | None = None
+        sid: str, store: Store, user_id: str | None = None
     ) -> 'State':
         """
         Restores the state from the previously saved session.
         """
 
         state: State
+        from openhands.storage.db import DBStore
         try:
-            encoded = file_store.read(
-                get_conversation_agent_state_filename(sid, user_id)
-            )
-            pickled = base64.b64decode(encoded)
-            state = pickle.loads(pickled)
-        except FileNotFoundError:
-            # if user_id is provided, we are in a saas/remote use case
-            # and we need to check if the state is in the old directory.
-            if user_id:
-                filename = get_conversation_agent_state_filename(sid)
-                encoded = file_store.read(filename)
+            if isinstance(store, DBStore):
+                # DB backend: only use session id as key, no legacy fallback
+                key = sid
+                encoded = store.read(key)
                 pickled = base64.b64decode(encoded)
                 state = pickle.loads(pickled)
             else:
-                raise FileNotFoundError(
-                    f'Could not restore state from session file for sid: {sid}'
-                )
+                # File backend: use filename, fallback to legacy location if needed
+                key = get_conversation_agent_state_filename(sid, user_id)
+                try:
+                    encoded = store.read(key)
+                except FileNotFoundError:
+                    if user_id:
+                        filename = get_conversation_agent_state_filename(sid)
+                        encoded = store.read(filename)
+                    else:
+                        raise FileNotFoundError(
+                            f'Could not restore state from session file for sid: {sid}'
+                        )
+                pickled = base64.b64decode(encoded)
+                state = pickle.loads(pickled)
         except Exception as e:
             logger.debug(f'Could not restore state from session: {e}')
             raise e

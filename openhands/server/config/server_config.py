@@ -12,6 +12,15 @@ class ServerConfig(ServerConfigInterface):
     github_client_id = os.environ.get('GITHUB_APP_CLIENT_ID', '')
     enable_billing = os.environ.get('ENABLE_BILLING', 'false') == 'true'
     hide_llm_settings = os.environ.get('HIDE_LLM_SETTINGS', 'false') == 'true'
+
+    # Always use filestore for OSS mode unless overridden
+    storage_type = os.environ.get('OPENHANDS_STORAGE_TYPE', 'filestore')
+    
+    # Use standard EventStream for OSS mode unless overridden
+    event_stream_class = os.environ.get(
+        'EVENT_STREAM_CLASS',
+        'openhands.events.stream.EventStream'
+    )
     settings_store_class: str = (
         'openhands.storage.settings.file_settings_store.FileSettingsStore'
     )

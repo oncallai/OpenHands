@@ -1,5 +1,5 @@
-# Publishes the OpenHands PyPi package
-name: Publish PyPi Package
+# DISABLED: This workflow is temporarily disabled in favor of GCR builds
+name: DISABLED_PyPI Release
 
 # Triggered manually
 on:

@@ -129,3 +129,20 @@ class PromptManager:
         if latest_user_message:
             reminder_text = f'\n\nENVIRONMENT REMINDER: You have {state.max_iterations - state.iteration} turns left to complete the task. When finished reply with <finish></finish>.'
             latest_user_message.content.append(TextContent(text=reminder_text))
+
+    def render_prompt(self, template_name: str, variables: dict | None = None) -> str:
+        """
+        Loads and renders a template with the given variables.
+
+        Args:
+            template_name: Name of the template file (without .j2 extension)
+            variables: Dictionary of variables to pass to the template
+
+        Returns:
+            The rendered template as a string
+        """
+        if variables is None:
+            variables = {}
+
+        template = self._load_template(template_name)
+        return template.render(**variables).strip()

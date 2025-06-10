@@ -1,17 +1,12 @@
-# Workflow that builds, tests and then pushes the OpenHands and runtime docker images to the ghcr.io repository
-name: Docker
+# DISABLED: This workflow is temporarily disabled in favor of GCR builds
+# Original name: Docker
+name: DISABLED_Docker
 
 # Always run on "main"
 # Always run on tags
 # Always run on PRs
 # Can also be triggered manually
 on:
-  push:
-    branches:
-      - main
-    tags:
-      - '*'
-  pull_request:
   workflow_dispatch:
     inputs:
       reason:
