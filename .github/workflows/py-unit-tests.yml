@@ -1,13 +1,5 @@
-# DISABLED: This workflow is temporarily disabled in favor of GCR builds
-name: DISABLED_Python Unit Tests
-
-on:
-  workflow_dispatch:
-    inputs:
-      reason:
-        description: 'Reason for manual trigger'
-        required: true
-        default: ''
+# Workflow that runs python unit tests
+name: Run Python Unit Tests
 
 # The jobs in this workflow are required, so they must run at all times
 # * Always run on "main"
@@ -89,4 +81,3 @@ jobs:
         env:
           TEST_RUNTIME: local
           DEBUG: "1"
-

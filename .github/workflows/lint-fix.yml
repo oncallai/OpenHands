@@ -1,13 +1,8 @@
-# DISABLED: This workflow is temporarily disabled in favor of GCR builds
-name: DISABLED_Lint Fix
+name: Lint Fix
 
 on:
-  workflow_dispatch:
-    inputs:
-      reason:
-        description: 'Reason for manual trigger'
-        required: true
-        default: ''
+  pull_request:
+    types: [labeled]
 
 jobs:
   # Frontend lint fixes
