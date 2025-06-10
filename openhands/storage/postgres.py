@@ -5,12 +5,10 @@ proper connection management, error handling, and resource cleanup.
 """
 
 import builtins
-import logging
 import os
 import threading
 from contextlib import contextmanager
-from dataclasses import dataclass
-from typing import Any, ClassVar, Generator, Optional, Union
+from typing import Any, Generator, Optional, Union
 
 import psycopg2
 import psycopg2.extras
@@ -18,13 +16,19 @@ import psycopg2.pool
 import psycopg2.sql
 from pydantic import TypeAdapter
 
+from openhands.core.logger import openhands_logger as logger
 from openhands.storage.db import DBStore
 
-# Set up logging for this module
-logger = logging.getLogger(__name__)
+# Global registry for connection pools - shared across all instances
+_global_pool_registry: dict[str, psycopg2.pool.ThreadedConnectionPool] = {}
+_global_pool_refs: dict[str, int] = {}
+_global_registry_lock = threading.Lock()
+
+# Global config cache to ensure same configuration object
+_global_config_cache: Optional['DatabaseConfig'] = None
+_config_cache_lock = threading.Lock()
 
 
-@dataclass
 class DatabaseConfig:
     """
     Configuration class for PostgreSQL database connection.
@@ -33,55 +37,79 @@ class DatabaseConfig:
     validation to ensure required configuration is present.
     """
 
-    host: str
-    port: int
-    user: str
-    password: str
-    dbname: str
-    table: Optional[str] = None
-
-    # Connection pool settings
-    min_connections: int = 1
-    max_connections: int = 20
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        user: str,
+        password: str,
+        dbname: str,
+        table: Optional[str] = None,
+        min_connections: int = 1,
+        max_connections: int = 20,
+    ):
+        """Initialize the database configuration."""
+        self.host = host
+        self.port = port
+        self.user = user
+        self.password = password
+        self.dbname = dbname
+        self.table = table
+        self.min_connections = min_connections
+        self.max_connections = max_connections
 
     @classmethod
     def from_env(cls) -> 'DatabaseConfig':
         """
-        Create configuration from environment variables.
+        Create configuration from environment variables with global caching.
 
         Returns:
-            DatabaseConfig: Validated configuration object
+            DatabaseConfig: Shared configuration object
 
         Raises:
             ValueError: If required environment variables are missing
         """
-        # Check for required environment variables
-        required_vars = [
-            'SUPABASE_HOST',
-            'SUPABASE_USER',
-            'SUPABASE_PASSWORD',
-            'SUPABASE_DBNAME',
-        ]
-        missing_vars = [var for var in required_vars if not os.environ.get(var)]
+        global _global_config_cache
 
-        if missing_vars:
-            raise ValueError(f'Missing required environment variables: {missing_vars}')
+        if _global_config_cache is None:
+            with _config_cache_lock:
+                if _global_config_cache is None:
+                    # Check for required environment variables
+                    required_vars = [
+                        'SUPABASE_HOST',
+                        'SUPABASE_USER',
+                        'SUPABASE_PASSWORD',
+                        'SUPABASE_DBNAME',
+                    ]
+                    missing_vars = [
+                        var for var in required_vars if not os.environ.get(var)
+                    ]
 
-        # Parse port with validation
-        port_str = os.environ.get('SUPABASE_PORT', '5432')
-        try:
-            port = int(port_str)
-        except ValueError:
-            raise ValueError(f'Invalid port number: {port_str}')
+                    if missing_vars:
+                        raise ValueError(
+                            f'Missing required environment variables: {missing_vars}'
+                        )
 
-        return cls(
-            host=os.environ['SUPABASE_HOST'],
-            port=port,
-            user=os.environ['SUPABASE_USER'],
-            password=os.environ['SUPABASE_PASSWORD'],
-            dbname=os.environ['SUPABASE_DBNAME'],
-            table=os.environ.get('SUPABASE_TABLE'),
-        )
+                    # Parse port with validation
+                    port_str = os.environ.get('SUPABASE_PORT', '5432')
+                    try:
+                        port = int(port_str)
+                    except ValueError:
+                        raise ValueError(f'Invalid port number: {port_str}')
+
+                    _global_config_cache = cls(
+                        host=os.environ['SUPABASE_HOST'],
+                        port=port,
+                        user=os.environ['SUPABASE_USER'],
+                        password=os.environ['SUPABASE_PASSWORD'],
+                        dbname=os.environ['SUPABASE_DBNAME'],
+                        table=os.environ.get('SUPABASE_TABLE'),
+                    )
+                    logger.debug(
+                        f'Created global DatabaseConfig for {_global_config_cache.host}:{_global_config_cache.port}/{_global_config_cache.dbname}'
+                    )
+
+        return _global_config_cache
 
     def get_connection_key(self) -> str:
         """Generate a unique key for this database configuration."""
@@ -94,141 +122,145 @@ class DatabaseError(Exception):
     pass
 
 
+def get_connection_pool(config: DatabaseConfig) -> psycopg2.pool.ThreadedConnectionPool:
+    """
+    Get or create a connection pool using global registry.
+
+    This function ensures that only one connection pool exists per database configuration
+    across all processes and threads.
+
+    Args:
+        config: Database configuration
+
+    Returns:
+        Connection pool instance
+
+    Raises:
+        DatabaseError: If pool creation fails
+    """
+    pool_key = config.get_connection_key()
+
+    with _global_registry_lock:
+        if pool_key not in _global_pool_registry:
+            logger.debug(f'Creating GLOBAL connection pool for {pool_key}')
+            try:
+                connection_params = {
+                    'host': config.host,
+                    'port': config.port,
+                    'user': config.user,
+                    'password': config.password,
+                    'dbname': config.dbname,
+                }
+
+                pool = psycopg2.pool.ThreadedConnectionPool(
+                    config.min_connections,
+                    config.max_connections,
+                    **connection_params,
+                )
+
+                _global_pool_registry[pool_key] = pool
+                _global_pool_refs[pool_key] = 0
+                logger.info(
+                    f'Created GLOBAL PostgreSQL connection pool for {pool_key} '
+                    f'with {config.min_connections}-{config.max_connections} connections '
+                    f'(Total global pools: {len(_global_pool_registry)})'
+                )
+            except psycopg2.Error as e:
+                logger.error(f'Failed to create connection pool for {pool_key}: {e}')
+                raise DatabaseError(
+                    f'Failed to create connection pool for {pool_key}: {e}'
+                )
+        else:
+            logger.debug(
+                f'Reusing GLOBAL connection pool for {pool_key} (Total global pools: {len(_global_pool_registry)})'
+            )
+
+    # Increment reference count
+    _global_pool_refs[pool_key] += 1
+    # Only log reference count for new pools or every 100th reference
+    if _global_pool_refs[pool_key] == 1:
+        logger.debug(f'Global pool {pool_key} first reference')
+    elif _global_pool_refs[pool_key] % 100 == 0:
+        logger.info(
+            f'Global pool {pool_key} usage: {_global_pool_refs[pool_key]} references (Total pools: {len(_global_pool_registry)})'
+        )
+    return _global_pool_registry[pool_key]
+
+
+def release_connection_pool(config: DatabaseConfig) -> None:
+    """
+    Release a reference to a connection pool in the global registry.
+
+    Args:
+        config: Database configuration
+    """
+    pool_key = config.get_connection_key()
+
+    with _global_registry_lock:
+        if pool_key in _global_pool_refs:
+            _global_pool_refs[pool_key] -= 1
+            logger.debug(
+                f'Global pool {pool_key} reference count after release: {_global_pool_refs[pool_key]}'
+            )
+
+            # If no more references, close the pool
+            if _global_pool_refs[pool_key] <= 0:
+                logger.info(
+                    f'No more references for global pool {pool_key}, closing it'
+                )
+                if pool_key in _global_pool_registry:
+                    try:
+                        _global_pool_registry[pool_key].closeall()
+                        logger.info(f'Closed global connection pool for {pool_key}')
+                    except Exception as e:
+                        logger.error(
+                            f'Error closing global connection pool for {pool_key}: {e}'
+                        )
+                    finally:
+                        del _global_pool_registry[pool_key]
+                        del _global_pool_refs[pool_key]
+                        logger.debug(f'Removed global pool {pool_key} from registry')
+        else:
+            logger.warning(
+                f'Attempted to release non-existent global pool reference: {pool_key}'
+            )
+
+
+def get_global_pool_stats() -> dict[str, dict[str, Any]]:
+    """Get statistics for all global connection pools."""
+    with _global_registry_lock:
+        stats = {}
+        for pool_key, pool in _global_pool_registry.items():
+            stats[pool_key] = {
+                'references': _global_pool_refs.get(pool_key, 0),
+                'min_connections': pool.minconn,
+                'max_connections': pool.maxconn,
+            }
+        return stats
+
+
 class ConnectionPoolManager:
     """
-    Singleton manager for database connection pools.
+    Simplified connection pool manager that uses global registry.
 
-    This ensures that multiple PostgresStore instances with the same configuration
-    share the same connection pool, optimizing resource usage.
+    This class is now just a lightweight wrapper around the global pool functions.
     """
 
-    _instance: Optional['ConnectionPoolManager'] = None
-    _lock: ClassVar[threading.Lock] = threading.Lock()
-
     def __init__(self) -> None:
-        """Initialize the manager attributes."""
-        self._pools: dict[str, psycopg2.pool.ThreadedConnectionPool] = {}
-        self._pool_refs: dict[str, int] = {}
-        self._pools_lock = threading.Lock()
-
-    def __new__(cls) -> 'ConnectionPoolManager':
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-        return cls._instance
+        """Initialize the manager."""
+        logger.debug('ConnectionPoolManager created (uses global registry)')
 
     def get_pool(self, config: DatabaseConfig) -> psycopg2.pool.ThreadedConnectionPool:
-        """
-        Get or create a connection pool for the given configuration.
-
-        Args:
-            config: Database configuration
-
-        Returns:
-            Connection pool instance
-
-        Raises:
-            DatabaseError: If pool creation fails
-        """
-        pool_key = config.get_connection_key()
-        logger.debug(f'Requesting connection pool for {pool_key}')
-
-        with self._pools_lock:
-            if pool_key not in self._pools:
-                logger.info(f'Creating new connection pool for {pool_key}')
-                try:
-                    connection_params = {
-                        'host': config.host,
-                        'port': config.port,
-                        'user': config.user,
-                        'password': config.password,
-                        'dbname': config.dbname,
-                    }
-
-                    logger.debug(
-                        f'Connecting to PostgreSQL: {config.host}:{config.port}/{config.dbname}'
-                    )
-                    pool = psycopg2.pool.ThreadedConnectionPool(
-                        config.min_connections,
-                        config.max_connections,
-                        **connection_params,
-                    )
-
-                    self._pools[pool_key] = pool
-                    self._pool_refs[pool_key] = 0
-                    logger.info(
-                        f'Created new PostgreSQL connection pool for {pool_key} '
-                        f'with {config.min_connections}-{config.max_connections} connections'
-                    )
-                except psycopg2.Error as e:
-                    logger.error(
-                        f'Failed to create connection pool for {pool_key}: {e}'
-                    )
-                    raise DatabaseError(
-                        f'Failed to create connection pool for {pool_key}: {e}'
-                    )
-            else:
-                logger.debug(f'Reusing existing connection pool for {pool_key}')
-
-            # Increment reference count
-            self._pool_refs[pool_key] += 1
-            logger.debug(
-                f'Pool {pool_key} reference count: {self._pool_refs[pool_key]}'
-            )
-            return self._pools[pool_key]
+        """Get connection pool from global registry."""
+        return get_connection_pool(config)
 
     def release_pool(self, config: DatabaseConfig) -> None:
-        """
-        Release a reference to a connection pool.
-
-        Args:
-            config: Database configuration
-        """
-        pool_key = config.get_connection_key()
-        logger.debug(f'Releasing pool reference for {pool_key}')
-
-        with self._pools_lock:
-            if pool_key in self._pool_refs:
-                self._pool_refs[pool_key] -= 1
-                logger.debug(
-                    f'Pool {pool_key} reference count after release: {self._pool_refs[pool_key]}'
-                )
-
-                # If no more references, close the pool
-                if self._pool_refs[pool_key] <= 0:
-                    logger.info(f'No more references for pool {pool_key}, closing it')
-                    if pool_key in self._pools:
-                        try:
-                            self._pools[pool_key].closeall()
-                            logger.info(f'Closed connection pool for {pool_key}')
-                        except Exception as e:
-                            logger.error(
-                                f'Error closing connection pool for {pool_key}: {e}'
-                            )
-                        finally:
-                            del self._pools[pool_key]
-                            del self._pool_refs[pool_key]
-                            logger.debug(f'Removed pool {pool_key} from manager')
-            else:
-                logger.warning(
-                    f'Attempted to release non-existent pool reference: {pool_key}'
-                )
+        """Release connection pool from global registry."""
+        release_connection_pool(config)
 
     def get_pool_stats(self) -> dict[str, dict[str, Any]]:
-        """Get statistics for all managed pools."""
-        logger.debug('Getting connection pool statistics')
-        with self._pools_lock:
-            stats = {}
-            for pool_key, pool in self._pools.items():
-                stats[pool_key] = {
-                    'references': self._pool_refs.get(pool_key, 0),
-                    'min_connections': pool.minconn,
-                    'max_connections': pool.maxconn,
-                    # Note: psycopg2 doesn't expose current connection count easily
-                }
-            logger.debug(f'Retrieved stats for {len(stats)} connection pools')
-            return stats
+        """Get global pool statistics."""
+        return get_global_pool_stats()
 
 
 class PostgresStore(DBStore):
@@ -448,7 +480,7 @@ class PostgresStore(DBStore):
         self, session_id: str, metadata_dict: dict[str, Any]
     ) -> None:
         """
-        Insert or update conversation metadata.
+        Store or update conversation metadata.
 
         Args:
             session_id: Unique session identifier
@@ -457,21 +489,27 @@ class PostgresStore(DBStore):
         Raises:
             DatabaseError: If upsert operation fails
         """
+        # Get the table name (defaults to configured table or openhands_sessions)
+        table_name = self.table or 'openhands_sessions'
+
         with self.get_connection() as conn:
             with conn.cursor() as cur:
                 try:
-                    query = """
-                        INSERT INTO openhands_sessions (id, metadata, created_at, updated_at)
-                        VALUES (%s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                        ON CONFLICT (id) DO UPDATE SET
-                            metadata = EXCLUDED.metadata,
-                            updated_at = CURRENT_TIMESTAMP
-                    """
+                    query = psycopg2.sql.SQL("""
+                        INSERT INTO {} (id, metadata, created_at, updated_at)
+                        VALUES (%s, %s, NOW(), NOW())
+                        ON CONFLICT (id)
+                        DO UPDATE SET metadata = EXCLUDED.metadata, updated_at = NOW()
+                    """).format(psycopg2.sql.Identifier(table_name))
+
                     cur.execute(
-                        query, (session_id, psycopg2.extras.Json(metadata_dict))
+                        query,
+                        (session_id, psycopg2.extras.Json(metadata_dict)),
                     )
                     conn.commit()
-                    logger.debug(f'Successfully upserted conversation: {session_id}')
+                    logger.debug(
+                        f'Successfully upserted conversation metadata for session {session_id} in table {table_name}'
+                    )
 
                 except psycopg2.Error as e:
                     conn.rollback()
@@ -481,7 +519,7 @@ class PostgresStore(DBStore):
 
     def get_conversation(self, session_id: str) -> dict[str, Any]:
         """
-        Get conversation metadata as raw dictionary.
+        Get conversation metadata as a raw dictionary.
 
         Args:
             session_id: Unique session identifier
@@ -490,20 +528,27 @@ class PostgresStore(DBStore):
             Dict[str, Any]: Raw conversation metadata
 
         Raises:
-            FileNotFoundError: If conversation doesn't exist
+            FileNotFoundError: If session doesn't exist
             DatabaseError: If read operation fails
         """
+        # Get the table name (defaults to configured table or openhands_sessions)
+        table_name = self.table or 'openhands_sessions'
+
         with self.get_connection() as conn:
             with conn.cursor() as cur:
                 try:
-                    query = 'SELECT metadata FROM openhands_sessions WHERE id = %s'
+                    query = psycopg2.sql.SQL(
+                        'SELECT metadata FROM {} WHERE id = %s'
+                    ).format(psycopg2.sql.Identifier(table_name))
                     cur.execute(query, (session_id,))
                     row = cur.fetchone()
 
                     if not row:
-                        raise FileNotFoundError(f'Conversation not found: {session_id}')
+                        raise FileNotFoundError(f'Session not found: {session_id}')
 
-                    logger.debug(f'Successfully retrieved conversation: {session_id}')
+                    logger.debug(
+                        f'Successfully retrieved conversation metadata for session {session_id} from table {table_name}'
+                    )
                     return row[0]
 
                 except psycopg2.Error as e:
@@ -513,48 +558,47 @@ class PostgresStore(DBStore):
         self, session_id: str, type_adapter: TypeAdapter
     ) -> Any:
         """
-        Get conversation metadata with type validation.
+        Get conversation metadata with type conversion.
 
         Args:
             session_id: Unique session identifier
-            type_adapter: Pydantic type adapter for validation
+            type_adapter: Pydantic type adapter for conversion
 
         Returns:
-            Validated conversation metadata object
+            Any: Converted conversation metadata
 
         Raises:
-            FileNotFoundError: If conversation doesn't exist or invalid
+            FileNotFoundError: If session doesn't exist
             DatabaseError: If read operation fails
         """
+        # Get the table name (defaults to configured table or openhands_sessions)
+        table_name = self.table or 'openhands_sessions'
+
         with self.get_connection() as conn:
             with conn.cursor() as cur:
                 try:
-                    query = 'SELECT metadata FROM openhands_sessions WHERE id = %s'
+                    query = psycopg2.sql.SQL(
+                        'SELECT metadata FROM {} WHERE id = %s'
+                    ).format(psycopg2.sql.Identifier(table_name))
                     cur.execute(query, (session_id,))
                     row = cur.fetchone()
 
                     if not row:
                         raise FileNotFoundError(f'Conversation not found: {session_id}')
 
-                    json_obj = row[0]
-
-                    # Validate required fields
-                    if 'created_at' not in json_obj:
-                        raise FileNotFoundError(
-                            f'Invalid conversation metadata for {session_id}'
+                    try:
+                        result = type_adapter.validate_python(row[0])
+                        logger.debug(
+                            f'Successfully retrieved and converted conversation metadata for session {session_id} from table {table_name}'
                         )
-
-                    # Clean up deprecated fields
-                    if 'github_user_id' in json_obj:
-                        json_obj = json_obj.copy()  # Don't modify the original
-                        json_obj.pop('github_user_id')
-
-                    # Validate and return typed object
-                    result = type_adapter.validate_python(json_obj)
-                    logger.debug(
-                        f'Successfully retrieved and validated conversation: {session_id}'
-                    )
-                    return result
+                        return result
+                    except Exception as e:
+                        logger.error(
+                            f'Failed to convert metadata for conversation {session_id}: {e}'
+                        )
+                        raise DatabaseError(
+                            f'Failed to convert conversation metadata for {session_id}: {e}'
+                        )
 
                 except psycopg2.Error as e:
                     raise DatabaseError(
@@ -563,26 +607,33 @@ class PostgresStore(DBStore):
 
     def delete_conversation(self, session_id: str) -> None:
         """
-        Delete a conversation and all associated data.
+        Delete a conversation and all its associated data.
 
         Args:
             session_id: Unique session identifier
 
         Raises:
-            FileNotFoundError: If conversation doesn't exist
+            FileNotFoundError: If session doesn't exist
             DatabaseError: If delete operation fails
         """
+        # Get the table name (defaults to configured table or openhands_sessions)
+        table_name = self.table or 'openhands_sessions'
+
         with self.get_connection() as conn:
             with conn.cursor() as cur:
                 try:
-                    query = 'DELETE FROM openhands_sessions WHERE id = %s'
+                    query = psycopg2.sql.SQL('DELETE FROM {} WHERE id = %s').format(
+                        psycopg2.sql.Identifier(table_name)
+                    )
                     cur.execute(query, (session_id,))
 
                     if cur.rowcount == 0:
-                        raise FileNotFoundError(f'Conversation not found: {session_id}')
+                        raise FileNotFoundError(f'Session not found: {session_id}')
 
                     conn.commit()
-                    logger.debug(f'Successfully deleted conversation: {session_id}')
+                    logger.debug(
+                        f'Successfully deleted conversation {session_id} from table {table_name}'
+                    )
 
                 except psycopg2.Error as e:
                     conn.rollback()
@@ -598,19 +649,24 @@ class PostgresStore(DBStore):
             session_id: Unique session identifier
 
         Returns:
-            bool: True if conversation exists, False otherwise
+            bool: True if conversation exists
 
         Raises:
-            DatabaseError: If check operation fails
+            DatabaseError: If existence check fails
         """
+        # Get the table name (defaults to configured table or openhands_sessions)
+        table_name = self.table or 'openhands_sessions'
+
         with self.get_connection() as conn:
             with conn.cursor() as cur:
                 try:
-                    query = 'SELECT 1 FROM openhands_sessions WHERE id = %s'
+                    query = psycopg2.sql.SQL('SELECT 1 FROM {} WHERE id = %s').format(
+                        psycopg2.sql.Identifier(table_name)
+                    )
                     cur.execute(query, (session_id,))
                     result = cur.fetchone() is not None
                     logger.debug(
-                        f'Conversation existence check for {session_id}: {result}'
+                        f'Conversation existence check for {session_id} in table {table_name}: {result}'
                     )
                     return result
 
@@ -629,13 +685,20 @@ class PostgresStore(DBStore):
         Raises:
             DatabaseError: If list operation fails
         """
+        # Get the table name (defaults to configured table or openhands_sessions)
+        table_name = self.table or 'openhands_sessions'
+
         with self.get_connection() as conn:
             with conn.cursor() as cur:
                 try:
-                    query = 'SELECT id FROM openhands_sessions ORDER BY created_at DESC'
+                    query = psycopg2.sql.SQL(
+                        'SELECT id FROM {} ORDER BY created_at DESC'
+                    ).format(psycopg2.sql.Identifier(table_name))
                     cur.execute(query)
                     result = [row[0] for row in cur.fetchall()]
-                    logger.debug(f'Listed {len(result)} conversations')
+                    logger.debug(
+                        f'Listed {len(result)} conversations from table {table_name}'
+                    )
                     return result
 
                 except psycopg2.Error as e:
@@ -710,10 +773,24 @@ class PostgresStore(DBStore):
                             f'No event found for session_id={session_id} event_index={event_index}'
                         )
 
+                    # Ensure we return a proper dict, handling various PostgreSQL data types
+                    event_data = row[0]
+                    if isinstance(event_data, dict):
+                        result = event_data
+                    elif isinstance(event_data, (str, bytes)):
+                        import json
+
+                        result = json.loads(event_data)
+                    else:
+                        # Handle memoryview or other PostgreSQL-specific types
+                        import json
+
+                        result = json.loads(str(event_data))
+
                     logger.debug(
                         f'Successfully read event {event_index} for session {session_id}'
                     )
-                    return row[0]
+                    return result
 
                 except psycopg2.Error as e:
                     raise DatabaseError(

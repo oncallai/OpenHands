@@ -71,8 +71,11 @@ class AgentSession:
         - store: Instance of the Store
         """
 
+        # Import here to avoid circular import
+        from openhands.server.shared import EventStreamImpl
+
         self.sid = sid
-        self.event_stream = EventStream(sid, store, user_id)
+        self.event_stream = EventStreamImpl(sid, store, user_id)
         self.store = store
         self._status_callback = status_callback
         self.user_id = user_id
@@ -172,6 +175,7 @@ class AgentSession:
                     agent_configs,
                 )
             else:
+                self.logger.info(f'Creating controller for session {self.sid}')
                 self.controller = self._create_controller(
                     agent,
                     config.security.confirmation_mode,
@@ -180,6 +184,7 @@ class AgentSession:
                     agent_to_llm_config=agent_to_llm_config,
                     agent_configs=agent_configs,
                 )
+                self.logger.info(f'Controller created successfully for session {self.sid}')
 
             if not self._closed:
                 if initial_message:
@@ -208,7 +213,9 @@ class AgentSession:
 
     async def close(self) -> None:
         """Closes the Agent session"""
+        self.logger.info(f'AgentSession.close() called for {self.sid}')
         if self._closed:
+            self.logger.debug(f'Session {self.sid} already closed')
             return
         self._closed = True
         while self._starting and should_continue():
@@ -224,9 +231,12 @@ class AgentSession:
         if self.event_stream is not None:
             self.event_stream.close()
         if self.controller is not None:
+            self.logger.info(f'Controller exists for {self.sid}, saving state')
             end_state = self.controller.get_state()
             end_state.save_to_session(self.sid, self.store, self.user_id)
             await self.controller.close()
+        else:
+            self.logger.warning(f'No controller found for {self.sid}, state not saved')
         if self.runtime is not None:
             EXECUTOR.submit(self.runtime.close)
         if self.security_analyzer is not None:

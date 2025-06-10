@@ -23,11 +23,14 @@ class ServerConversation:
         config: OpenHandsConfig,
         user_id: str | None,
     ):
+        # Import here to avoid circular import
+        from openhands.server.shared import EventStreamImpl
+
         self.sid = sid
         self.config = config
         self.file_store = file_store
         self.user_id = user_id
-        self.event_stream = EventStream(sid, file_store, user_id)
+        self.event_stream = EventStreamImpl(sid, file_store, user_id)
         if config.security.security_analyzer:
             self.security_analyzer = options.SecurityAnalyzers.get(
                 config.security.security_analyzer, SecurityAnalyzer

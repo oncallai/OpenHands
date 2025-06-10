@@ -51,6 +51,7 @@ class ClusteredConversationManager(StandaloneConversationManager):
     _connection_queries: dict[str, _ClusterQuery[dict[str, str]]] = field(
         default_factory=dict
     )
+    _cleanup_log_counter: int = field(default=0)
 
     async def __aenter__(self):
         await super().__aenter__()
@@ -71,7 +72,7 @@ class ClusteredConversationManager(StandaloneConversationManager):
 
     def _get_redis_client(self):
         redis_client = getattr(self.sio.manager, 'redis', None)
-        logger.info(f'Redis client obtained: {redis_client is not None}')
+        logger.debug(f'Redis client obtained: {redis_client is not None}')
         return redis_client
 
     async def _redis_subscribe(self):
@@ -83,10 +84,10 @@ class ClusteredConversationManager(StandaloneConversationManager):
         if not redis_client:
             logger.error('Failed to get Redis client for subscription')
             return
-        
+
         try:
             pubsub = redis_client.pubsub()
-            logger.info('Created Redis pubsub object')
+            logger.debug('Created Redis pubsub object')
             await pubsub.subscribe('session_msg')
             logger.info('Successfully subscribed to session_msg channel')
             while should_continue():
@@ -95,7 +96,7 @@ class ClusteredConversationManager(StandaloneConversationManager):
                         ignore_subscribe_messages=True, timeout=5
                     )
                     if message:
-                        logger.info(f'Received Redis message: {message}')
+                        logger.debug(f'Received Redis message: {message}')
                         await self._process_message(message)
                 except asyncio.CancelledError:
                     return
@@ -325,19 +326,15 @@ class ClusteredConversationManager(StandaloneConversationManager):
     async def _cleanup_stale(self):
         while should_continue():
             if self._get_redis_client():
-                # Debug info for HA envs
-                logger.info(
-                    f'Attached conversations: {len(self._active_conversations)}'
-                )
-                logger.info(
-                    f'Detached conversations: {len(self._detached_conversations)}'
-                )
-                logger.info(
-                    f'Running agent loops: {len(self._local_agent_loops_by_sid)}'
-                )
-                logger.info(
-                    f'Local connections: {len(self._local_connection_id_to_session_id)}'
-                )
+                # Debug info for HA envs - log only every 10th time to reduce spam
+                self._cleanup_log_counter += 1
+                if self._cleanup_log_counter % 10 == 0:
+                    logger.debug(
+                        f'Cluster stats: {len(self._active_conversations)} attached, '
+                        f'{len(self._detached_conversations)} detached, '
+                        f'{len(self._local_agent_loops_by_sid)} running loops, '
+                        f'{len(self._local_connection_id_to_session_id)} local connections'
+                    )
             try:
                 async with self._conversations_lock:
                     # Create a list of items to process to avoid modifying dict during iteration
@@ -397,7 +394,7 @@ class ClusteredConversationManager(StandaloneConversationManager):
                 await asyncio.sleep(_CLEANUP_INTERVAL)
 
     async def _close_session(self, sid: str):
-        logger.info(f'_close_session:{sid}')
+        logger.debug(f'_close_session:{sid}')
 
         # Clear up local variables
         connection_ids_to_remove = list(
@@ -405,7 +402,8 @@ class ClusteredConversationManager(StandaloneConversationManager):
             for connection_id, conn_sid in self._local_connection_id_to_session_id.items()
             if sid == conn_sid
         )
-        logger.info(f'removing connections: {connection_ids_to_remove}')
+        if connection_ids_to_remove:
+            logger.debug(f'removing connections: {connection_ids_to_remove}')
         for connnnection_id in connection_ids_to_remove:
             self._local_connection_id_to_session_id.pop(connnnection_id, None)
 

@@ -13,7 +13,7 @@ from openhands.server.conversation_manager.conversation_manager import (
 )
 from openhands.server.monitoring import MonitoringListener
 from openhands.server.types import ServerConfigInterface
-from openhands.storage import get_file_store
+from openhands.storage import get_db_store, get_file_store
 from openhands.storage.conversation.conversation_store import ConversationStore
 from openhands.storage.secrets.secrets_store import SecretsStore
 from openhands.storage.settings.settings_store import SettingsStore
@@ -30,12 +30,20 @@ assert isinstance(server_config_interface, ServerConfig), (
 )
 server_config: ServerConfig = server_config_interface
 logger.info(f'Using server config class {server_config.conversation_manager_class}')
-store: Store = get_file_store(
-    config.file_store,
-    config.file_store_path,
-    config.file_store_web_hook_url,
-    config.file_store_web_hook_headers,
-)
+
+# Use database store for SAAS mode, file store for OSS mode
+store: Store
+if hasattr(server_config, 'storage_type') and server_config.storage_type == 'database':
+    logger.info('Using database store for SAAS mode')
+    store = get_db_store()
+else:
+    logger.info('Using file store for OSS mode')
+    store = get_file_store(
+        config.file_store,
+        config.file_store_path,
+        config.file_store_web_hook_url,
+        config.file_store_web_hook_headers,
+    )
 
 client_manager = None
 redis_host = os.environ.get('REDIS_HOST')
@@ -75,4 +83,5 @@ ConversationStoreImpl = get_impl(
     server_config.conversation_store_class,
 )
 
+logger.info(f'Using event stream class {server_config.event_stream_class}')
 EventStreamImpl = get_impl(EventStream, server_config.event_stream_class)
