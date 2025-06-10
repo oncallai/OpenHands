@@ -1,0 +1,204 @@
+name: Deploy to GKE
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+        - staging
+        - production
+      image_tag:
+        description: 'Docker image tag to deploy (optional, defaults to commit SHA)'
+        required: false
+        type: string
+
+env:
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'kustodian-dev01' }}
+  GKE_CLUSTER: runtime-api
+  GKE_ZONE: ${{ vars.GKE_ZONE || 'us-central1-a' }}
+  REGISTRY_HOSTNAME: gcr.io
+  IMAGE_NAME: runtime-api
+
+jobs:
+  set-environment:
+    name: Set Environment Variables
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.set-env.outputs.environment }}
+      image_tag: ${{ steps.set-env.outputs.image_tag }}
+      deploy_env: ${{ steps.set-env.outputs.deploy_env }}
+    steps:
+      - name: Set environment based on branch/input
+        id: set-env
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "environment=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+            echo "image_tag=${{ github.event.inputs.image_tag || github.sha }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]] || [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "environment=production" >> $GITHUB_OUTPUT
+            echo "image_tag=${{ github.sha }}" >> $GITHUB_OUTPUT
+          else
+            echo "environment=staging" >> $GITHUB_OUTPUT
+            echo "image_tag=${{ github.sha }}" >> $GITHUB_OUTPUT
+          fi
+          
+          # Set deploy environment based on environment
+          if [[ "${{ github.event.inputs.environment || (github.ref == 'refs/heads/main' && 'production') || 'staging' }}" == "production" ]]; then
+            echo "deploy_env=production" >> $GITHUB_OUTPUT
+          else
+            echo "deploy_env=staging" >> $GITHUB_OUTPUT
+          fi
+
+  build-and-push:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    needs: set-environment
+    outputs:
+      image_url: ${{ steps.build.outputs.image_url }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          service_account_key: ${{ secrets.GCP_DEV_REGISTRY_SA_KEY }}
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          export_default_credentials: true
+
+      - name: Configure Docker to use gcloud as credential helper
+        run: |
+          gcloud auth configure-docker ${{ env.REGISTRY_HOSTNAME }}
+
+      - name: Build and push Docker image
+        id: build
+        run: |
+          IMAGE_URL="${{ env.REGISTRY_HOSTNAME }}/${{ env.GCP_PROJECT_ID }}/${{ env.IMAGE_NAME }}:${{ needs.set-environment.outputs.image_tag }}"
+          
+          # Build image
+          docker build -t $IMAGE_URL .
+          
+          # Push image
+          docker push $IMAGE_URL
+          
+          # Also tag as latest for the environment
+          ENV_IMAGE_URL="${{ env.REGISTRY_HOSTNAME }}/${{ env.GCP_PROJECT_ID }}/${{ env.IMAGE_NAME }}:${{ needs.set-environment.outputs.environment }}-latest"
+          docker tag $IMAGE_URL $ENV_IMAGE_URL
+          docker push $ENV_IMAGE_URL
+          
+          echo "image_url=$IMAGE_URL" >> $GITHUB_OUTPUT
+
+  deploy:
+    name: Deploy to GKE
+    runs-on: ubuntu-latest
+    needs: [set-environment, build-and-push]
+    environment: ${{ needs.set-environment.outputs.deploy_env }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          service_account_key: ${{ secrets.GCP_DEV_REGISTRY_SA_KEY }}
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          export_default_credentials: true
+
+      - name: Get GKE credentials
+        run: |
+          gcloud container clusters get-credentials ${{ env.GKE_CLUSTER }} --zone ${{ env.GKE_ZONE }} --project ${{ env.GCP_PROJECT_ID }}
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: '3.12.0'
+
+      - name: Add Helm repositories
+        run: |
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo add fairwinds https://charts.fairwinds.com/stable
+          helm repo update
+
+      - name: Create namespace if not exists
+        run: |
+          kubectl create namespace runtime-api --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy with Helm
+        run: |
+          # Build Helm command
+          HELM_COMMAND="helm upgrade --install runtime-api ./deploy/chart"
+          HELM_COMMAND="$HELM_COMMAND --namespace runtime-api"
+          HELM_COMMAND="$HELM_COMMAND --values ./deploy/envs/${{ needs.set-environment.outputs.environment }}/values.yaml"
+          HELM_COMMAND="$HELM_COMMAND --set image.repository=${{ env.REGISTRY_HOSTNAME }}/${{ env.GCP_PROJECT_ID }}/${{ env.IMAGE_NAME }}"
+          HELM_COMMAND="$HELM_COMMAND --set image.tag=${{ needs.set-environment.outputs.image_tag }}"
+          HELM_COMMAND="$HELM_COMMAND --set image.pullPolicy=Always"
+          HELM_COMMAND="$HELM_COMMAND --wait --timeout=10m"
+          
+          # Add environment-specific overrides
+          if [[ "${{ needs.set-environment.outputs.environment }}" == "production" ]]; then
+            HELM_COMMAND="$HELM_COMMAND --set replicaCount=3"
+            HELM_COMMAND="$HELM_COMMAND --set autoscaling.minReplicas=3"
+            HELM_COMMAND="$HELM_COMMAND --set autoscaling.maxReplicas=10"
+          else
+            HELM_COMMAND="$HELM_COMMAND --set replicaCount=2"
+            HELM_COMMAND="$HELM_COMMAND --set autoscaling.minReplicas=2"
+            HELM_COMMAND="$HELM_COMMAND --set autoscaling.maxReplicas=5"
+          fi
+          
+          # Execute Helm command
+          echo "Executing: $HELM_COMMAND"
+          eval $HELM_COMMAND
+
+      - name: Verify deployment
+        run: |
+          # Wait for deployment to be ready
+          kubectl rollout status deployment/runtime-api --namespace runtime-api --timeout=300s
+          
+          # Check pods status
+          kubectl get pods --namespace runtime-api -l app.kubernetes.io/name=runtime-api
+          
+          # Check service status
+          kubectl get service --namespace runtime-api
+
+      - name: Get deployment info
+        run: |
+          echo "### Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: ${{ needs.set-environment.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image**: ${{ needs.build-and-push.outputs.image_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Namespace**: runtime-api" >> $GITHUB_STEP_SUMMARY
+          echo "- **Cluster**: ${{ env.GKE_CLUSTER }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Get ingress info if available
+          if kubectl get ingress runtime-api --namespace runtime-api &>/dev/null; then
+            INGRESS_HOST=$(kubectl get ingress runtime-api --namespace runtime-api -o jsonpath='{.spec.rules[0].host}')
+            echo "- **URL**: https://$INGRESS_HOST" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  notify:
+    name: Notify Deployment Status
+    runs-on: ubuntu-latest
+    needs: [set-environment, build-and-push, deploy]
+    if: always()
+    steps:
+      - name: Deployment Success
+        if: needs.deploy.result == 'success'
+        run: |
+          echo "✅ Deployment to ${{ needs.set-environment.outputs.environment }} succeeded!"
+          echo "Image: ${{ needs.build-and-push.outputs.image_url }}"
+
+      - name: Deployment Failure
+        if: needs.deploy.result == 'failure'
+        run: |
+          echo "❌ Deployment to ${{ needs.set-environment.outputs.environment }} failed!"
+          exit 1 

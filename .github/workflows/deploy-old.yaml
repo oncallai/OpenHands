@@ -1,0 +1,16 @@
+name: Deploy
+
+# Workflow disabled
+on:
+  push:
+    branches:
+      - '**'
+    tags:
+      - '*'
+
+jobs:
+  build-and-push-image:
+    # This condition ensures the workflow won't run
+    if: ${{ false }}
+    uses: all-hands-ai/deploy/.github/workflows/_docker_push.yaml@main
+    secrets: inherit
