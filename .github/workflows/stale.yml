@@ -1,14 +1,3 @@
-# DISABLED: This workflow is temporarily disabled in favor of GCR builds
-name: DISABLED_Stale
-
-on:
-  workflow_dispatch:
-    inputs:
-      reason:
-        description: 'Reason for manual trigger'
-        required: true
-        default: ''
-
 # Workflow that marks issues and PRs with no activity for 30 days with "Stale" and closes them after 7 more days of no activity
 name: 'Close stale issues'
 
