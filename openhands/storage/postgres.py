@@ -7,9 +7,10 @@ proper connection management, error handling, and resource cleanup.
 import builtins
 import logging
 import os
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Generator, Optional, Union
+from typing import Any, ClassVar, Generator, Optional, Union
 
 import psycopg2
 import psycopg2.extras
@@ -82,6 +83,10 @@ class DatabaseConfig:
             table=os.environ.get('SUPABASE_TABLE'),
         )
 
+    def get_connection_key(self) -> str:
+        """Generate a unique key for this database configuration."""
+        return f'{self.host}:{self.port}:{self.user}:{self.dbname}'
+
 
 class DatabaseError(Exception):
     """Custom exception for database-related errors."""
@@ -89,19 +94,156 @@ class DatabaseError(Exception):
     pass
 
 
+class ConnectionPoolManager:
+    """
+    Singleton manager for database connection pools.
+
+    This ensures that multiple PostgresStore instances with the same configuration
+    share the same connection pool, optimizing resource usage.
+    """
+
+    _instance: Optional['ConnectionPoolManager'] = None
+    _lock: ClassVar[threading.Lock] = threading.Lock()
+
+    def __init__(self) -> None:
+        """Initialize the manager attributes."""
+        self._pools: dict[str, psycopg2.pool.ThreadedConnectionPool] = {}
+        self._pool_refs: dict[str, int] = {}
+        self._pools_lock = threading.Lock()
+
+    def __new__(cls) -> 'ConnectionPoolManager':
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def get_pool(self, config: DatabaseConfig) -> psycopg2.pool.ThreadedConnectionPool:
+        """
+        Get or create a connection pool for the given configuration.
+
+        Args:
+            config: Database configuration
+
+        Returns:
+            Connection pool instance
+
+        Raises:
+            DatabaseError: If pool creation fails
+        """
+        pool_key = config.get_connection_key()
+        logger.debug(f'Requesting connection pool for {pool_key}')
+
+        with self._pools_lock:
+            if pool_key not in self._pools:
+                logger.info(f'Creating new connection pool for {pool_key}')
+                try:
+                    connection_params = {
+                        'host': config.host,
+                        'port': config.port,
+                        'user': config.user,
+                        'password': config.password,
+                        'dbname': config.dbname,
+                    }
+
+                    logger.debug(
+                        f'Connecting to PostgreSQL: {config.host}:{config.port}/{config.dbname}'
+                    )
+                    pool = psycopg2.pool.ThreadedConnectionPool(
+                        config.min_connections,
+                        config.max_connections,
+                        **connection_params,
+                    )
+
+                    self._pools[pool_key] = pool
+                    self._pool_refs[pool_key] = 0
+                    logger.info(
+                        f'Created new PostgreSQL connection pool for {pool_key} '
+                        f'with {config.min_connections}-{config.max_connections} connections'
+                    )
+                except psycopg2.Error as e:
+                    logger.error(
+                        f'Failed to create connection pool for {pool_key}: {e}'
+                    )
+                    raise DatabaseError(
+                        f'Failed to create connection pool for {pool_key}: {e}'
+                    )
+            else:
+                logger.debug(f'Reusing existing connection pool for {pool_key}')
+
+            # Increment reference count
+            self._pool_refs[pool_key] += 1
+            logger.debug(
+                f'Pool {pool_key} reference count: {self._pool_refs[pool_key]}'
+            )
+            return self._pools[pool_key]
+
+    def release_pool(self, config: DatabaseConfig) -> None:
+        """
+        Release a reference to a connection pool.
+
+        Args:
+            config: Database configuration
+        """
+        pool_key = config.get_connection_key()
+        logger.debug(f'Releasing pool reference for {pool_key}')
+
+        with self._pools_lock:
+            if pool_key in self._pool_refs:
+                self._pool_refs[pool_key] -= 1
+                logger.debug(
+                    f'Pool {pool_key} reference count after release: {self._pool_refs[pool_key]}'
+                )
+
+                # If no more references, close the pool
+                if self._pool_refs[pool_key] <= 0:
+                    logger.info(f'No more references for pool {pool_key}, closing it')
+                    if pool_key in self._pools:
+                        try:
+                            self._pools[pool_key].closeall()
+                            logger.info(f'Closed connection pool for {pool_key}')
+                        except Exception as e:
+                            logger.error(
+                                f'Error closing connection pool for {pool_key}: {e}'
+                            )
+                        finally:
+                            del self._pools[pool_key]
+                            del self._pool_refs[pool_key]
+                            logger.debug(f'Removed pool {pool_key} from manager')
+            else:
+                logger.warning(
+                    f'Attempted to release non-existent pool reference: {pool_key}'
+                )
+
+    def get_pool_stats(self) -> dict[str, dict[str, Any]]:
+        """Get statistics for all managed pools."""
+        logger.debug('Getting connection pool statistics')
+        with self._pools_lock:
+            stats = {}
+            for pool_key, pool in self._pools.items():
+                stats[pool_key] = {
+                    'references': self._pool_refs.get(pool_key, 0),
+                    'min_connections': pool.minconn,
+                    'max_connections': pool.maxconn,
+                    # Note: psycopg2 doesn't expose current connection count easily
+                }
+            logger.debug(f'Retrieved stats for {len(stats)} connection pools')
+            return stats
+
+
 class PostgresStore(DBStore):
     """
-    PostgreSQL implementation of DBStore with connection pooling and proper error handling.
+    PostgreSQL implementation of DBStore with optimized connection pooling and proper error handling.
 
-    This implementation uses connection pooling to manage database connections efficiently
-    and provides robust error handling with proper resource cleanup.
+    This implementation uses a singleton connection pool manager to efficiently share
+    database connections across multiple store instances with the same configuration.
     """
 
     def __init__(
         self, table: Optional[str] = None, config: Optional[DatabaseConfig] = None
     ) -> None:
         """
-        Initialize PostgreSQL store with connection pooling.
+        Initialize PostgreSQL store with optimized connection pooling.
 
         Args:
             table: Default table name to use for operations
@@ -113,33 +255,14 @@ class PostgresStore(DBStore):
         """
         self.config = config or DatabaseConfig.from_env()
         self.table = table or self.config.table
+        self._pool_manager = ConnectionPoolManager()
+        self._pool = self._pool_manager.get_pool(self.config)
+        self._closed = False
 
         if not self.table:
             logger.warning(
                 'No default table specified. Table must be provided for each operation.'
             )
-
-        # Connection parameters for psycopg2
-        self.connection_params = {
-            'host': self.config.host,
-            'port': self.config.port,
-            'user': self.config.user,
-            'password': self.config.password,
-            'dbname': self.config.dbname,
-        }
-
-        # Initialize connection pool
-        try:
-            self.pool = psycopg2.pool.ThreadedConnectionPool(
-                self.config.min_connections,
-                self.config.max_connections,
-                **self.connection_params,
-            )
-            logger.info(
-                f'Created PostgreSQL connection pool with {self.config.min_connections}-{self.config.max_connections} connections'
-            )
-        except psycopg2.Error as e:
-            raise DatabaseError(f'Failed to create connection pool: {e}')
 
     @contextmanager
     def get_connection(self) -> Generator[psycopg2.extensions.connection, None, None]:
@@ -152,9 +275,12 @@ class PostgresStore(DBStore):
         Raises:
             DatabaseError: If unable to get connection from pool
         """
+        if self._closed:
+            raise DatabaseError('PostgresStore has been closed')
+
         conn = None
         try:
-            conn = self.pool.getconn()
+            conn = self._pool.getconn()
             if conn is None:
                 raise DatabaseError('Unable to get connection from pool')
             yield conn
@@ -164,7 +290,7 @@ class PostgresStore(DBStore):
             raise DatabaseError(f'Database operation failed: {e}')
         finally:
             if conn:
-                self.pool.putconn(conn)
+                self._pool.putconn(conn)
 
     def _validate_table_name(self, table: Optional[str] = None) -> str:
         """
@@ -686,15 +812,16 @@ class PostgresStore(DBStore):
         """
         Clean up connection pool and resources.
 
-        This method should be called when the store is no longer needed
-        to ensure proper cleanup of all database connections.
+        This method releases the reference to the shared connection pool,
+        allowing proper cleanup when no longer needed.
         """
-        if hasattr(self, 'pool') and self.pool:
+        if not self._closed:
             try:
-                self.pool.closeall()
-                logger.info('PostgreSQL connection pool closed successfully')
+                self._pool_manager.release_pool(self.config)
+                self._closed = True
+                logger.info('PostgreSQL store closed successfully')
             except Exception as e:
-                logger.error(f'Error closing connection pool: {e}')
+                logger.error(f'Error closing PostgreSQL store: {e}')
 
     def __enter__(self):
         """Context manager entry."""

@@ -1,7 +1,7 @@
 """
 Improved database-backed conversation store implementation.
 This module provides a robust conversation storage system with proper error handling,
-async execution, and comprehensive logging.
+async execution, and comprehensive logging with optimized connection pooling.
 """
 
 from __future__ import annotations
@@ -12,8 +12,9 @@ import datetime
 import enum
 import json
 import logging
+import threading
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, ClassVar, Dict, List, Optional, Union
 
 import psycopg2
 from pydantic import TypeAdapter
@@ -21,7 +22,7 @@ from pydantic import TypeAdapter
 from openhands.storage.conversation.conversation_store import ConversationStore
 from openhands.storage.data_models.conversation_metadata import ConversationMetadata
 from openhands.storage.data_models.conversation_metadata_result_set import ConversationMetadataResultSet
-from openhands.storage.postgres import PostgresStore
+from openhands.storage.postgres import PostgresStore, DatabaseConfig
 
 # Set up logging for this module
 logger = logging.getLogger(__name__)
@@ -35,61 +36,187 @@ class ConversationStoreError(Exception):
     pass
 
 
+class ConversationStoreManager:
+    """
+    Singleton manager for conversation store instances.
+
+    This ensures that multiple conversation store instances with the same configuration
+    share the same underlying database store, optimizing resource usage.
+    """
+
+    _instance: Optional['ConversationStoreManager'] = None
+    _lock: ClassVar[threading.Lock] = threading.Lock()
+
+    def __init__(self) -> None:
+        """Initialize the manager attributes."""
+        self._stores: dict[str, PostgresStore] = {}
+        self._store_refs: dict[str, int] = {}
+        self._stores_lock = threading.Lock()
+
+    def __new__(cls) -> 'ConversationStoreManager':
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def get_store(self, config: Optional[DatabaseConfig] = None, table: str = 'openhands_sessions') -> PostgresStore:
+        """
+        Get or create a PostgresStore for the given configuration.
+
+        Args:
+            config: Database configuration (if None, will load from environment)
+            table: Table name for the store
+
+        Returns:
+            PostgresStore instance
+
+        Raises:
+            ConversationStoreError: If store creation fails
+        """
+        # Use default config if none provided
+        db_config = config or DatabaseConfig.from_env()
+        store_key = f"{db_config.get_connection_key()}:{table}"
+        logger.debug(f'Requesting PostgresStore for {store_key}')
+
+        with self._stores_lock:
+            if store_key not in self._stores:
+                logger.info(f'Creating new PostgresStore for {store_key}')
+                try:
+                    store = PostgresStore(table=table, config=db_config)
+
+                    # Test the connection
+                    logger.debug(f'Performing health check for store {store_key}')
+                    if not store.health_check():
+                        logger.error(f'Health check failed for store {store_key}')
+                        store.close()
+                        raise ConversationStoreError("Database health check failed during store creation")
+
+                    self._stores[store_key] = store
+                    self._store_refs[store_key] = 0
+                    logger.info(f'Created new PostgresStore for {store_key}')
+
+                except Exception as e:
+                    logger.error(f"Failed to create PostgresStore for {store_key}: {e}")
+                    raise ConversationStoreError(f"Failed to create database store: {e}")
+            else:
+                logger.debug(f'Reusing existing PostgresStore for {store_key}')
+
+            # Increment reference count
+            self._store_refs[store_key] += 1
+            logger.debug(f'Store {store_key} reference count: {self._store_refs[store_key]}')
+            return self._stores[store_key]
+
+    def release_store(self, config: Optional[DatabaseConfig] = None, table: str = 'openhands_sessions') -> None:
+        """
+        Release a reference to a PostgresStore.
+
+        Args:
+            config: Database configuration
+            table: Table name for the store
+        """
+        db_config = config or DatabaseConfig.from_env()
+        store_key = f"{db_config.get_connection_key()}:{table}"
+        logger.debug(f'Releasing store reference for {store_key}')
+
+        with self._stores_lock:
+            if store_key in self._store_refs:
+                self._store_refs[store_key] -= 1
+                logger.debug(f'Store {store_key} reference count after release: {self._store_refs[store_key]}')
+
+                # If no more references, close the store
+                if self._store_refs[store_key] <= 0:
+                    logger.info(f'No more references for store {store_key}, closing it')
+                    if store_key in self._stores:
+                        try:
+                            self._stores[store_key].close()
+                            logger.info(f'Closed PostgresStore for {store_key}')
+                        except Exception as e:
+                            logger.error(f'Error closing PostgresStore for {store_key}: {e}')
+                        finally:
+                            del self._stores[store_key]
+                            del self._store_refs[store_key]
+                            logger.debug(f'Removed store {store_key} from manager')
+            else:
+                logger.warning(f'Attempted to release non-existent store reference: {store_key}')
+
+    def get_store_stats(self) -> dict[str, dict[str, Any]]:
+        """Get statistics for all managed stores."""
+        logger.debug('Getting store statistics')
+        with self._stores_lock:
+            stats = {}
+            for store_key, store in self._stores.items():
+                stats[store_key] = {
+                    'references': self._store_refs.get(store_key, 0),
+                    'health': store.health_check(),
+                    'table': store.table,
+                }
+            logger.debug(f'Retrieved stats for {len(stats)} stores')
+            return stats
+
+
 class SaasConversationStore(ConversationStore):
     """
-    Database-backed conversation store with async execution and proper error handling.
+    Database-backed conversation store with async execution and optimized resource management.
 
     This implementation provides a robust conversation storage system that uses
-    PostgreSQL as the backend with connection pooling, proper error handling,
+    PostgreSQL as the backend with optimized connection pooling, proper error handling,
     and async execution for non-blocking operations.
     """
 
-    def __init__(self, db_store: PostgresStore) -> None:
+    def __init__(self, db_store: PostgresStore, config: Optional[DatabaseConfig] = None) -> None:
         """
         Initialize the conversation store with a database backend.
 
         Args:
             db_store: PostgreSQL store instance for database operations
+            config: Database configuration for cleanup purposes
         """
         self.db_store = db_store
-        logger.info("Initialized DBConversationStore")
+        self._config = config
+        self._store_manager = ConversationStoreManager()
+        logger.info("Initialized SaasConversationStore")
 
     @classmethod
     async def get_instance(
         cls,
         config: Dict[str, Any],
         user_id: Optional[str]
-    ) -> 'DBConversationStore':
+    ) -> 'SaasConversationStore':
         """
-        Factory method to create a DBConversationStore instance.
+        Factory method to create a SaasConversationStore instance with optimized resource sharing.
 
         Args:
             config: Configuration dictionary for the store
             user_id: Optional user identifier for filtering
 
         Returns:
-            DBConversationStore: Configured instance
+            SaasConversationStore: Configured instance with shared resources
 
         Raises:
             ConversationStoreError: If initialization fails
         """
         try:
-            # Create PostgreSQL store specifically for sessions table
-            db_store = PostgresStore(table='openhands_sessions')
+            logger.debug(f"Initializing SaasConversationStore for user: {user_id}")
 
-            # Test the connection
-            if not db_store.health_check():
-                raise ConversationStoreError("Database health check failed during initialization")
+            # Get shared database store from manager
+            store_manager = ConversationStoreManager()
+            logger.debug("Getting shared database store from manager")
+            db_store = store_manager.get_store(table='openhands_sessions')
 
-            instance = cls(db_store)
-            logger.info(f"Created DBConversationStore instance for user: {user_id}")
+            # Create database configuration for cleanup tracking
+            logger.debug("Loading database configuration")
+            db_config = DatabaseConfig.from_env()
+
+            instance = cls(db_store, db_config)
+            logger.info(f"Created SaasConversationStore instance for user: {user_id}")
             return instance
 
         except Exception as e:
-            logger.error(f"Failed to create DBConversationStore instance: {e}")
+            logger.error(f"Failed to create SaasConversationStore instance: {e}")
             raise ConversationStoreError(f"Failed to initialize conversation store: {e}")
 
-    def _prepare_metadata_for_storage(self, metadata: ConversationMetadata) -> Dict[str, Any]:
+    def _prepare_metadata_for_storage(self, metadata: ConversationMetadata) -> dict[str, Any]:
         """
         Convert metadata object to a JSON-serializable dictionary.
 
@@ -100,7 +227,7 @@ class SaasConversationStore(ConversationStore):
             metadata: Conversation metadata to convert
 
         Returns:
-            Dict[str, Any]: JSON-serializable dictionary
+            dict[str, Any]: JSON-serializable dictionary
         """
         def to_jsonable(obj: Any) -> Any:
             """
@@ -302,8 +429,8 @@ class SaasConversationStore(ConversationStore):
             page_ids = all_ids[offset:offset + limit]
 
             # Retrieve metadata for each conversation in the page
-            page_conversations: List[ConversationMetadata] = []
-            failed_conversations: List[str] = []
+            page_conversations: list[ConversationMetadata] = []
+            failed_conversations: list[str] = []
 
             for conversation_id in page_ids:
                 try:
@@ -378,17 +505,17 @@ class SaasConversationStore(ConversationStore):
         """
         Clean up resources used by the conversation store.
 
-        This method should be called when the store is no longer needed
-        to ensure proper cleanup of database connections and other resources.
+        This method releases the reference to the shared database store,
+        allowing proper resource cleanup when no longer needed.
         """
         try:
-            if self.db_store:
-                self.db_store.close()
-                logger.info("DBConversationStore closed successfully")
+            if self._config and self._store_manager:
+                self._store_manager.release_store(self._config, 'openhands_sessions')
+                logger.info("SaasConversationStore reference released successfully")
         except Exception as e:
-            logger.error(f"Error closing DBConversationStore: {e}")
+            logger.error(f"Error releasing SaasConversationStore reference: {e}")
 
-    def __enter__(self) -> 'DBConversationStore':
+    def __enter__(self) -> 'SaasConversationStore':
         """Context manager entry."""
         return self
 
@@ -396,10 +523,33 @@ class SaasConversationStore(ConversationStore):
         """Context manager exit with automatic cleanup."""
         self.close()
 
-    async def __aenter__(self) -> 'DBConversationStore':
+    async def __aenter__(self) -> 'SaasConversationStore':
         """Async context manager entry."""
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         """Async context manager exit with automatic cleanup."""
         self.close()
+
+    def get_stats(self) -> dict[str, Any]:
+        """
+        Get statistics about the conversation store and underlying resources.
+
+        Returns:
+            dict[str, Any]: Statistics including connection pool and store info
+        """
+        try:
+            store_stats = self._store_manager.get_store_stats()
+            pool_stats = self.db_store._pool_manager.get_pool_stats()
+
+            return {
+                'store_stats': store_stats,
+                'pool_stats': pool_stats,
+                'health': self.db_store.health_check(),
+            }
+        except Exception as e:
+            logger.error(f"Failed to get conversation store stats: {e}")
+            return {'error': str(e)}
+
+# For backward compatibility
+DBConversationStore = SaasConversationStore
