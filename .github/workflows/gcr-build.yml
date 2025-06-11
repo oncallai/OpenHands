@@ -74,20 +74,25 @@ jobs:
         uses: docker/setup-qemu-action@v3.6.0
         with:
           image: tonistiigi/binfmt:latest
-      # Create a Docker config.json file with GCR credentials
+      # Set up Google Cloud SDK and authenticate with GCR
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@v1
+        with:
+          service_account_key: ${{ secrets.GCP_DEV_REGISTRY_SA_KEY }}
+          project_id: ${{ env.GCR_PROJECT }}
+          export_default_credentials: true
+      
+      # Configure Docker to use gcloud as a credential helper
       - name: Set up Docker auth
         run: |
-          # Create Docker config directory if it doesn't exist
-          mkdir -p $HOME/.docker
+          gcloud auth configure-docker ${{ env.GCR_REGISTRY }} --quiet
           
-          # Create a JSON structure for Docker config
-          echo '{"auths":{"${{ env.GCR_REGISTRY }}":{"auth":"'$(echo -n _json_key:${{ secrets.GCP_DEV_REGISTRY_SA_KEY }} | base64)'"}}}' > $HOME/.docker/config.json
-          
-          # Verify the config file was created
+          # Verify Docker config
           ls -la $HOME/.docker/
           
-          # Test Docker login
-          docker login ${{ env.GCR_REGISTRY }} || echo "Docker login verification failed but config.json should still work"
+          # Test Docker login to GCR
+          echo "Testing Docker authentication with GCR..."
+          docker login -u oauth2accesstoken -p $(gcloud auth print-access-token) ${{ env.GCR_REGISTRY }}
       
       - name: Set up Docker Buildx
         id: buildx
