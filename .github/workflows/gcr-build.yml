@@ -27,7 +27,7 @@ concurrency:
 
 env:
   RELEVANT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-  GCR_REGISTRY: us-docker.pkg.dev
+  GCR_REGISTRY: gcr.io
   GCR_PROJECT: kustodian-dev01
 
 jobs:
