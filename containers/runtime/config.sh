@@ -1,7 +1,6 @@
-# Use the registry from environment variable
-DOCKER_REGISTRY=${DOCKER_REGISTRY}
-# Use the organization from environment variable
-DOCKER_ORG=${DOCKER_ORG}
+# Hardcode the registry and organization for GCR
+DOCKER_REGISTRY=gcr.io
+DOCKER_ORG=kustodian-dev01
 DOCKER_BASE_DIR="./containers/runtime"
 DOCKER_IMAGE=runtime
 # These variables will be appended by the runtime_build.py script
