@@ -96,12 +96,16 @@ jobs:
           echo REPO_OWNER=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]') >> $GITHUB_ENV
       - name: Build and push app image
         if: "!github.event.pull_request.head.repo.fork"
+        env:
+          DOCKER_REGISTRY: ${{ env.GCR_REGISTRY }}
         run: |
-          ./containers/build.sh -i openhands -o ${{ env.GCR_PROJECT }} -r ${{ env.GCR_REGISTRY }} --push
+          ./containers/build.sh -i openhands -o ${{ env.GCR_PROJECT }} --push
       - name: Build app image
         if: "github.event.pull_request.head.repo.fork"
+        env:
+          DOCKER_REGISTRY: ${{ env.GCR_REGISTRY }}
         run: |
-          ./containers/build.sh -i openhands -o ${{ env.GCR_PROJECT }} -r ${{ env.GCR_REGISTRY }} --load
+          ./containers/build.sh -i openhands -o ${{ env.GCR_PROJECT }} --load
       - name: Get hash in App Image
         id: get_hash_in_app_image
         run: |
