@@ -79,6 +79,8 @@ jobs:
         with:
           registry: ${{ env.GCR_REGISTRY }}
           username: _json_key
+          # The 'password' field should contain the entire Google service account JSON key, not a password string.
+          # This is the official way to authenticate to GCR/Artifact Registry from CI.
           password: ${{ secrets.GCP_DEV_REGISTRY_SA_KEY }}
       - name: Set up Docker Buildx
         id: buildx
@@ -129,6 +131,8 @@ jobs:
         with:
           registry: ${{ env.GCR_REGISTRY }}
           username: _json_key
+          # The 'password' field should contain the entire Google service account JSON key, not a password string.
+          # This is the official way to authenticate to GCR/Artifact Registry from CI.
           password: ${{ secrets.GCP_DEV_REGISTRY_SA_KEY }}
       - name: Set up Docker Buildx
         id: buildx
