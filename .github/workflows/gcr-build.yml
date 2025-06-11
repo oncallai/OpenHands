@@ -97,15 +97,21 @@ jobs:
       - name: Build and push app image
         if: "!github.event.pull_request.head.repo.fork"
         env:
+          # Set DOCKER_REGISTRY without the project ID
           DOCKER_REGISTRY: ${{ env.GCR_REGISTRY }}
+          # Set DOCKER_ORG to the project ID
+          DOCKER_ORG: ${{ env.GCR_PROJECT }}
         run: |
-          ./containers/build.sh -i openhands -o ${{ env.GCR_PROJECT }} --push
+          ./containers/build.sh -i openhands --push
       - name: Build app image
         if: "github.event.pull_request.head.repo.fork"
         env:
+          # Set DOCKER_REGISTRY without the project ID
           DOCKER_REGISTRY: ${{ env.GCR_REGISTRY }}
+          # Set DOCKER_ORG to the project ID
+          DOCKER_ORG: ${{ env.GCR_PROJECT }}
         run: |
-          ./containers/build.sh -i openhands -o ${{ env.GCR_PROJECT }} --load
+          ./containers/build.sh -i openhands --load
       - name: Get hash in App Image
         id: get_hash_in_app_image
         run: |
