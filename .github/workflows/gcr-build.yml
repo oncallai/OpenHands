@@ -84,7 +84,9 @@ jobs:
           
       - name: Login to GCR
         run: |
-          cat sa-key.json | docker login -u _json_key --password-stdin ${{ env.GCR_REGISTRY }}
+          # Use gcloud for authentication instead of direct docker login
+          gcloud auth activate-service-account --key-file=sa-key.json
+          gcloud auth configure-docker ${{ env.GCR_REGISTRY }} --quiet
       - name: Set up Docker Buildx
         id: buildx
         uses: docker/setup-buildx-action@v3
