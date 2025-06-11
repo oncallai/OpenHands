@@ -1,36 +1,53 @@
-# Workflow that builds, tests and then pushes the OpenHands and runtime docker images to the GCR repository
-name: GCR Docker Build
+name: Build and Push Docker Image
 
-# Always run on "main"
-# Always run on tags
-# Always run on PRs
-# Can also be triggered manually
 on:
-  push:
+  workflow_run:
+    workflows: ["Check", "Test Runtime API"]
+    types:
+      - completed
     branches:
       - main
-      - "*"
+      - dev
+  push:
     tags:
-      - '*'
-  pull_request:
+      - 'v*'
   workflow_dispatch:
     inputs:
-      reason:
-        description: 'Reason for manual trigger'
+      environment:
+        description: 'Environment tag for image'
         required: true
-        default: ''
-
-# If triggered by a PR, it will be in the same group. However, each commit on main will be in its own unique group
-concurrency:
-  group: ${{ github.workflow }}-${{ (github.head_ref && github.ref) || github.run_id }}
-  cancel-in-progress: true
+        default: 'staging'
+        type: choice
+        options:
+        - staging
+        - production
+      image_tag:
+        description: 'Docker image tag to deploy (optional, defaults to commit SHA)'
+        required: false
+        type: string
 
 env:
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'kustodian-dev01' }}
+  REGISTRY_HOSTNAME: gcr.io
+  IMAGE_NAME: runtime-api
   RELEVANT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-  GCR_REGISTRY: gcr.io
-  GCR_PROJECT: kustodian-dev01
 
 jobs:
+  check-prerequisites:
+    name: Check Prerequisites
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name != 'workflow_run' }}
+    steps:
+      - name: Check workflow run result
+        if: github.event_name == 'workflow_run'
+        run: |
+          echo "Prerequisite workflow completed with result: ${{ github.event.workflow_run.conclusion }}"
+          if [[ "${{ github.event.workflow_run.conclusion }}" != "success" ]]; then
+            echo "❌ Prerequisite workflow failed. Stopping deployment."
+            exit 1
+          fi
+          echo "✅ Prerequisites passed. Proceeding with build and push."
+
   define-matrix:
     runs-on: ubuntu-latest
     outputs:
@@ -40,445 +57,180 @@ jobs:
         shell: bash
         id: define-base-images
         run: |
-          # Only build nikolaik on PRs, otherwise build both nikolaik and ubuntu.
-          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
-            json=$(jq -n -c '[
-                { image: "nikolaik/python-nodejs:python3.12-nodejs22", tag: "nikolaik" },
-                { image: "ubuntu:24.04", tag: "ubuntu" }
-
-              ]')
-          else
-            json=$(jq -n -c '[
-                { image: "nikolaik/python-nodejs:python3.12-nodejs22", tag: "nikolaik" },
-                { image: "ubuntu:24.04", tag: "ubuntu" }
-              ]')
-          fi
+          json=$(jq -n -c '[
+              { image: "nikolaik/python-nodejs:python3.12-nodejs22", tag: "nikolaik" },
+              { image: "ubuntu:24.04", tag: "ubuntu" }
+            ]')
           echo "base_image=$json" >> "$GITHUB_OUTPUT"
 
-  # Builds the OpenHands Docker images
-  gcr_build_app:
-    name: Build App Image
+  set-environment:
+    name: Set Environment Variables
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    needs: check-prerequisites
     outputs:
-      # Since this job uses outputs it cannot use matrix
-      hash_from_app_image: ${{ steps.get_hash_in_app_image.outputs.hash_from_app_image }}
+      environment: ${{ steps.set-env.outputs.environment }}
+      image_tag: ${{ steps.set-env.outputs.image_tag }}
+      registry_url: ${{ steps.set-env.outputs.registry_url }}
+      is_trusted: ${{ steps.set-env.outputs.is_trusted }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3.6.0
-        with:
-          image: tonistiigi/binfmt:latest
-      - name: Authenticate to Google Cloud
-        id: auth
-        uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ secrets.GCP_DEV_REGISTRY_SA_KEY }}
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
-        with:
-          project_id: ${{ env.GCP_PROJECT_ID }}
-      - name: Login to Artifact Registry
-        uses: docker/login-action@v3
-        with:
-          registry: gcr.io
-          username: oauth2accesstoken
-          password: ${{ steps.auth.outputs.access_token }}
-      - name: Set up Docker Buildx
-        id: buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Lowercase Repository Owner
+      - name: Set environment based on branch/input
+        id: set-env
         run: |
-          echo REPO_OWNER=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]') >> $GITHUB_ENV
-      - name: Build and push app image
-        if: "!github.event.pull_request.head.repo.fork"
-        run: |
-          ./containers/build.sh -i openhands -o ${{ env.GCR_PROJECT }} -r ${{ env.GCR_REGISTRY }} --push
-      - name: Build app image
-        if: "github.event.pull_request.head.repo.fork"
-        run: |
-          ./containers/build.sh -i openhands -o ${{ env.GCR_PROJECT }} -r ${{ env.GCR_REGISTRY }} --load
-      - name: Get hash in App Image
-        id: get_hash_in_app_image
-        run: |
-          # Run the build script in the app image
-          docker run -e SANDBOX_USER_ID=0 -v /var/run/docker.sock:/var/run/docker.sock ${{ env.GCR_REGISTRY }}/${{ env.GCR_PROJECT }}/openhands:${{ env.RELEVANT_SHA }} /bin/bash -c "mkdir -p containers/runtime; python3 openhands/runtime/utils/runtime_build.py --base_image ${{ env.BASE_IMAGE_FOR_HASH_EQUIVALENCE_TEST }} --build_folder containers/runtime --force_rebuild" 2>&1 | tee docker-outputs.txt
-          # Get the hash from the build script
-          hash_from_app_image=$(cat docker-outputs.txt | grep "Hash for docker build directory" | awk -F "): " '{print $2}' | uniq | head -n1)
-          echo "hash_from_app_image=$hash_from_app_image" >> $GITHUB_OUTPUT
-          echo "Hash from app image: $hash_from_app_image"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "environment=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+            echo "image_tag=${{ github.event.inputs.image_tag || github.sha }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]] || [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "environment=production" >> $GITHUB_OUTPUT
+            echo "image_tag=${{ github.sha }}" >> $GITHUB_OUTPUT
+          else
+            echo "environment=staging" >> $GITHUB_OUTPUT
+            echo "image_tag=${{ github.sha }}" >> $GITHUB_OUTPUT
+          fi
 
-  # Builds the runtime Docker images
-  gcr_build_runtime:
-    name: Build Image
+          # Set registry URL for GCR
+          echo "registry_url=${{ env.REGISTRY_HOSTNAME }}/${{ env.GCP_PROJECT_ID }}" >> $GITHUB_OUTPUT
+
+          # Check if this is a trusted source (not fork, not Dependabot)
+          if [[ "${{ github.event.pull_request.head.repo.fork }}" != "true" && "${{ github.actor }}" != "dependabot[bot]" ]]; then
+            echo "is_trusted=true" >> $GITHUB_OUTPUT
+            echo "✅ Trusted source - will authenticate and push to registry"
+          else
+            echo "is_trusted=false" >> $GITHUB_OUTPUT
+            echo "⚠️ Untrusted source (fork or Dependabot) - will build only, no push"
+          fi
+
+  build-runtime:
+    name: Build Runtime Image
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    needs: define-matrix
+    needs: [set-environment, define-matrix]
     strategy:
       matrix:
         base_image: ${{ fromJson(needs.define-matrix.outputs.base_image) }}
+    outputs:
+      image_url: ${{ steps.build.outputs.image_url }}
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3.6.0
-        with:
-          image: tonistiigi/binfmt:latest
-      - name: Authenticate to Google Cloud
-        id: auth
-        uses: google-github-actions/auth@v1
-        with:
-          token_format: access_token
-          workload_identity_provider: <workload_identity_provider>  # TODO: set your Workload Identity Provider
-          service_account: <service_account>  # TODO: set your Service Account email
-      - name: Login to Artifact Registry
-        uses: docker/login-action@v3
-        with:
-          registry: <location>-docker.pkg.dev  # TODO: set your region, e.g. us-docker.pkg.dev
-          username: oauth2accesstoken
-          password: ${{ steps.auth.outputs.access_token }}
-      - name: Set up Docker Buildx
-        id: buildx
-        uses: docker/setup-buildx-action@v3
+
+      - name: Debug Context Information
+        run: |
+          echo "Event name: ${{ github.event_name }}"
+          echo "Actor: ${{ github.actor }}"
+          echo "Is fork: ${{ github.event.pull_request.head.repo.fork }}"
+          echo "Repository: ${{ github.repository }}"
+          echo "Is trusted: ${{ needs.set-environment.outputs.is_trusted }}"
+          echo "Base image: ${{ matrix.base_image.image }}"
+
       - name: Set up Python
-        uses: useblacksmith/setup-python@v6
+        uses: actions/setup-python@v4
         with:
           python-version: '3.12'
-      - name: Cache Poetry dependencies
-        uses: useblacksmith/cache@v5
-        with:
-          path: |
-            ~/.cache/pypoetry
-            ~/.virtualenvs
-          key: ${{ runner.os }}-poetry-${{ hashFiles('**/poetry.lock') }}
-          # This is the one that saves the cache, the others set 'lookup-only: true'
-          restore-keys: |
-            ${{ runner.os }}-poetry-
+
       - name: Install poetry via pipx
         run: pipx install poetry
+
       - name: Install Python dependencies using Poetry
         run: make install-python-dependencies POETRY_GROUP=main INSTALL_PLAYWRIGHT=0
+
       - name: Create source distribution and Dockerfile
         run: poetry run python3 openhands/runtime/utils/runtime_build.py --base_image ${{ matrix.base_image.image }} --build_folder containers/runtime --force_rebuild
-      - name: Lowercase Repository Owner
-        run: |
-          echo REPO_OWNER=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]') >> $GITHUB_ENV
-      - name: Short SHA
-        run: |
-          echo SHORT_SHA=$(git rev-parse --short "$RELEVANT_SHA") >> $GITHUB_ENV
-      - name: Determine docker build params
-        if: github.event.pull_request.head.repo.fork != true
-        shell: bash
-        run: |
-          ./containers/build.sh -i runtime -o ${{ env.GCR_PROJECT }} -r ${{ env.GCR_REGISTRY }} -t ${{ matrix.base_image.tag }} --dry
 
-          DOCKER_BUILD_JSON=$(jq -c . < docker-build-dry.json)
-          echo "DOCKER_TAGS=$(echo "$DOCKER_BUILD_JSON" | jq -r '.tags | join(",")')" >> $GITHUB_ENV
-          echo "DOCKER_PLATFORM=$(echo "$DOCKER_BUILD_JSON" | jq -r '.platform')" >> $GITHUB_ENV
-          echo "DOCKER_BUILD_ARGS=$(echo "$DOCKER_BUILD_JSON" | jq -r '.build_args | join(",")')" >> $GITHUB_ENV
-      - name: Build and push runtime image
-        if: github.event.pull_request.head.repo.fork != true
-        uses: useblacksmith/build-push-action@v1
+      # Only authenticate to GCP for trusted sources
+      - name: Authenticate to Google Cloud
+        if: needs.set-environment.outputs.is_trusted == 'true'
+        uses: google-github-actions/auth@v2
         with:
-          push: true
-          tags: ${{ env.DOCKER_TAGS }}
-          platforms: ${{ env.DOCKER_PLATFORM }}
-          build-args: ${{ env.DOCKER_BUILD_ARGS }}
-          context: containers/runtime
-          provenance: false
-      # Forked repos can't push to GCR, so we just build in order to populate the cache for rebuilding
-      - name: Build runtime image ${{ matrix.base_image.image }} for fork
-        if: github.event.pull_request.head.repo.fork
-        uses: useblacksmith/build-push-action@v1
+          credentials_json: ${{ secrets.GCP_DEV_REGISTRY_SA_KEY }}
+
+      # Only set up Cloud SDK for trusted sources
+      - name: Set up Cloud SDK
+        if: needs.set-environment.outputs.is_trusted == 'true'
+        uses: google-github-actions/setup-gcloud@v2
         with:
-          tags: ${{ env.GCR_REGISTRY }}/${{ env.GCR_PROJECT }}/runtime:${{ env.RELEVANT_SHA }}-${{ matrix.base_image.tag }}
-          context: containers/runtime
-      - name: Upload runtime source for fork
-        if: github.event.pull_request.head.repo.fork
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      # Only configure Docker for trusted sources
+      - name: Configure Docker to use gcloud as credential helper for GCR
+        if: needs.set-environment.outputs.is_trusted == 'true'
+        run: |
+          gcloud auth configure-docker ${{ env.REGISTRY_HOSTNAME }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build and push for trusted sources
+      - name: Build and push runtime image (Trusted)
+        if: needs.set-environment.outputs.is_trusted == 'true'
+        id: build
+        run: |
+          IMAGE_URL="${{ needs.set-environment.outputs.registry_url }}/${{ env.IMAGE_NAME }}:${{ needs.set-environment.outputs.image_tag }}-${{ matrix.base_image.tag }}"
+
+          # Build image
+          docker build -t $IMAGE_URL containers/runtime
+
+          # Push image
+          docker push $IMAGE_URL
+
+          # Also tag as latest for the environment
+          ENV_IMAGE_URL="${{ needs.set-environment.outputs.registry_url }}/${{ env.IMAGE_NAME }}:${{ needs.set-environment.outputs.environment }}-latest-${{ matrix.base_image.tag }}"
+          docker tag $IMAGE_URL $ENV_IMAGE_URL
+          docker push $ENV_IMAGE_URL
+
+          echo "image_url=$IMAGE_URL" >> $GITHUB_OUTPUT
+
+      # Build only for untrusted sources (forks, Dependabot)
+      - name: Build runtime image only (Untrusted - Fork/Dependabot)
+        if: needs.set-environment.outputs.is_trusted == 'false'
+        run: |
+          IMAGE_URL="${{ needs.set-environment.outputs.registry_url }}/${{ env.IMAGE_NAME }}:${{ needs.set-environment.outputs.image_tag }}-${{ matrix.base_image.tag }}"
+
+          echo "🔒 Building runtime Docker image without push (untrusted source)"
+          echo "Image would be: $IMAGE_URL"
+
+          # Build image locally
+          docker build -t local-test-runtime-${{ matrix.base_image.tag }} containers/runtime
+
+          echo "✅ Runtime Docker image built successfully (not pushed due to security restrictions)"
+
+      # Upload runtime source for untrusted sources
+      - name: Upload runtime source for fork/dependabot
+        if: needs.set-environment.outputs.is_trusted == 'false'
         uses: actions/upload-artifact@v4
         with:
           name: runtime-src-${{ matrix.base_image.tag }}
           path: containers/runtime
 
-  verify_hash_equivalence_in_runtime_and_app:
-    name: Verify Hash Equivalence in Runtime and Docker images
-    runs-on: ubuntu-latest
-    needs: [gcr_build_runtime, gcr_build_app]
-    strategy:
-      fail-fast: false
-      matrix:
-        base_image: ['nikolaik']
-    env:
-      BASE_IMAGE_FOR_HASH_EQUIVALENCE_TEST: nikolaik/python-nodejs:python3.12-nodejs22
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-      - name: Cache Poetry dependencies
-        uses: useblacksmith/cache@v5
-        with:
-          path: |
-            ~/.cache/pypoetry
-            ~/.virtualenvs
-          key: ${{ runner.os }}-poetry-${{ hashFiles('**/poetry.lock') }}
-          lookup-only: true
-          restore-keys: |
-            ${{ runner.os }}-poetry-
-      - name: Set up Python
-        uses: useblacksmith/setup-python@v6
-        with:
-          python-version: '3.12'
-      - name: Install poetry via pipx
-        run: pipx install poetry
-      - name: Install Python dependencies using Poetry
-        run: make install-python-dependencies POETRY_GROUP=main INSTALL_PLAYWRIGHT=0
-      - name: Get hash in App Image
+      # Output build summary for trusted sources
+      - name: Output Build Summary (Trusted)
+        if: needs.set-environment.outputs.is_trusted == 'true'
         run: |
-          echo "Hash from app image: ${{ needs.gcr_build_app.outputs.hash_from_app_image }}"
-          echo "hash_from_app_image=${{ needs.gcr_build_app.outputs.hash_from_app_image }}" >> $GITHUB_ENV
+          echo "### Runtime Docker Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: ${{ needs.set-environment.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Base Image**: ${{ matrix.base_image.image }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image Built**: ${{ steps.build.outputs.image_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Registry**: ${{ env.REGISTRY_HOSTNAME }}/${{ env.GCP_PROJECT_ID }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image Tag**: ${{ needs.set-environment.outputs.image_tag }}-${{ matrix.base_image.tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ **Runtime Docker image successfully built and pushed to GCR!**" >> $GITHUB_STEP_SUMMARY
+          echo ""
+          echo "To deploy this image, use:"
+          echo "docker pull ${{ steps.build.outputs.image_url }}"
 
-      - name: Get hash using code (development mode)
+      # Output build summary for untrusted sources
+      - name: Output Build Summary (Untrusted)
+        if: needs.set-environment.outputs.is_trusted == 'false'
         run: |
-          mkdir -p containers/runtime
-          poetry run python3 openhands/runtime/utils/runtime_build.py --base_image ${{ env.BASE_IMAGE_FOR_HASH_EQUIVALENCE_TEST }} --build_folder containers/runtime --force_rebuild > output.txt 2>&1
-          hash_from_code=$(cat output.txt | grep "Hash for docker build directory" | awk -F "): " '{print $2}' | uniq | head -n1)
-          echo "hash_from_code=$hash_from_code" >> $GITHUB_ENV
-
-      - name: Compare hashes
-        run: |
-          echo "Hash from App Image: ${{ env.hash_from_app_image }}"
-          echo "Hash from Code: ${{ env.hash_from_code }}"
-          if [ "${{ env.hash_from_app_image }}" = "${{ env.hash_from_code }}" ]; then
-            echo "Hashes match!"
-          else
-            echo "Hashes do not match!"
-            exit 1
-          fi
-
-  # Run unit tests with the Docker runtime Docker images as root
-  test_runtime_root:
-    name: RT Unit Tests (Root)
-    needs: [gcr_build_runtime, define-matrix]
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        base_image: ${{ fromJson(needs.define-matrix.outputs.base_image) }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Docker Buildx
-        id: buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Download runtime source for fork
-        if: github.event.pull_request.head.repo.fork
-        uses: actions/download-artifact@v4
-        with:
-          name: runtime-src-${{ matrix.base_image.tag }}
-          path: containers/runtime
-      - name: Lowercase Repository Owner
-        run: |
-          echo REPO_OWNER=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]') >> $GITHUB_ENV
-      # Forked repos can't push to GCR, so we need to rebuild using cache
-      - name: Build runtime image ${{ matrix.base_image.image }} for fork
-        if: github.event.pull_request.head.repo.fork
-        uses: useblacksmith/build-push-action@v1
-        with:
-          load: true
-          tags: ${{ env.GCR_REGISTRY }}/${{ env.GCR_PROJECT }}/runtime:${{ env.RELEVANT_SHA }}-${{ matrix.base_image.tag }}
-          context: containers/runtime
-      - name: Cache Poetry dependencies
-        uses: useblacksmith/cache@v5
-        with:
-          path: |
-            ~/.cache/pypoetry
-            ~/.virtualenvs
-          key: ${{ runner.os }}-poetry-${{ hashFiles('**/poetry.lock') }}
-          lookup-only: true
-          restore-keys: |
-            ${{ runner.os }}-poetry-
-      - name: Set up Python
-        uses: useblacksmith/setup-python@v6
-        with:
-          python-version: '3.12'
-      - name: Install poetry via pipx
-        run: pipx install poetry
-      - name: Install Python dependencies using Poetry
-        run: make install-python-dependencies INSTALL_PLAYWRIGHT=0
-      - name: Run docker runtime tests
-        run: |
-          # We install pytest-xdist in order to run tests across CPUs
-          poetry run pip install pytest-xdist
-
-          # Install to be able to retry on failures for flaky tests
-          poetry run pip install pytest-rerunfailures
-
-          image_name=${{ env.GCR_REGISTRY }}/${{ env.GCR_PROJECT }}/runtime:${{ env.RELEVANT_SHA }}-${{ matrix.base_image.tag }}
-
-          # Setting RUN_AS_OPENHANDS to false means use root.
-          # That should mean SANDBOX_USER_ID is ignored but some tests do not check for RUN_AS_OPENHANDS.
-
-          TEST_RUNTIME=docker \
-          SANDBOX_USER_ID=$(id -u) \
-          SANDBOX_RUNTIME_CONTAINER_IMAGE=$image_name \
-          TEST_IN_CI=true \
-          RUN_AS_OPENHANDS=false \
-          poetry run pytest -n 7 -raRs --reruns 2 --reruns-delay 5 -s ./tests/runtime --ignore=tests/runtime/test_browsergym_envs.py --durations=10
-        env:
-          DEBUG: "1"
-
-  # Run unit tests with the Docker runtime Docker images as openhands user
-  test_runtime_oh:
-    name: RT Unit Tests (openhands)
-    runs-on: ubuntu-latest
-    needs: [gcr_build_runtime, define-matrix]
-    strategy:
-      matrix:
-        base_image: ${{ fromJson(needs.define-matrix.outputs.base_image) }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Docker Buildx
-        id: buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Download runtime source for fork
-        if: github.event.pull_request.head.repo.fork
-        uses: actions/download-artifact@v4
-        with:
-          name: runtime-src-${{ matrix.base_image.tag }}
-          path: containers/runtime
-      - name: Lowercase Repository Owner
-        run: |
-          echo REPO_OWNER=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]') >> $GITHUB_ENV
-      # Forked repos can't push to GCR, so we need to rebuild using cache
-      - name: Build runtime image ${{ matrix.base_image.image }} for fork
-        if: github.event.pull_request.head.repo.fork
-        uses: useblacksmith/build-push-action@v1
-        with:
-          load: true
-          tags: ${{ env.GCR_REGISTRY }}/${{ env.GCR_PROJECT }}/runtime:${{ env.RELEVANT_SHA }}-${{ matrix.base_image.tag }}
-          context: containers/runtime
-      - name: Cache Poetry dependencies
-        uses: useblacksmith/cache@v5
-        with:
-          path: |
-            ~/.cache/pypoetry
-            ~/.virtualenvs
-          key: ${{ runner.os }}-poetry-${{ hashFiles('**/poetry.lock') }}
-          lookup-only: true
-          restore-keys: |
-            ${{ runner.os }}-poetry-
-      - name: Set up Python
-        uses: useblacksmith/setup-python@v6
-        with:
-          python-version: '3.12'
-      - name: Install poetry via pipx
-        run: pipx install poetry
-      - name: Install Python dependencies using Poetry
-        run: make install-python-dependencies POETRY_GROUP=main,test,runtime INSTALL_PLAYWRIGHT=0
-      - name: Run runtime tests
-        run: |
-          # We install pytest-xdist in order to run tests across CPUs
-          poetry run pip install pytest-xdist
-
-          # Install to be able to retry on failures for flaky tests
-          poetry run pip install pytest-rerunfailures
-
-          image_name=${{ env.GCR_REGISTRY }}/${{ env.GCR_PROJECT }}/runtime:${{ env.RELEVANT_SHA }}-${{ matrix.base_image.tag }}
-
-          TEST_RUNTIME=docker \
-          SANDBOX_USER_ID=$(id -u) \
-          SANDBOX_RUNTIME_CONTAINER_IMAGE=$image_name \
-          TEST_IN_CI=true \
-          RUN_AS_OPENHANDS=true \
-          poetry run pytest -n 7 -raRs --reruns 2 --reruns-delay 5 -s ./tests/runtime --ignore=tests/runtime/test_browsergym_envs.py --durations=10
-        env:
-          DEBUG: "1"
-
-  # The two following jobs (named identically) are to check whether all the runtime tests have passed as the
-  # "All Runtime Tests Passed" is a required job for PRs to merge
-  # Due to this bug: https://github.com/actions/runner/issues/2566, we want to create a job that runs when the
-  # prerequisites have been cancelled or failed so merging is disallowed, otherwise Github considers "skipped" as "success"
-  runtime_tests_check_success:
-    name: All Runtime Tests Passed
-    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
-    runs-on: ubuntu-latest
-    needs: [test_runtime_root, test_runtime_oh, verify_hash_equivalence_in_runtime_and_app]
-    steps:
-      - name: All tests passed
-        run: echo "All runtime tests have passed successfully!"
-
-  runtime_tests_check_fail:
-    name: All Runtime Tests Passed
-    if: ${{ cancelled() || contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
-    runs-on: ubuntu-latest
-    needs: [test_runtime_root, test_runtime_oh, verify_hash_equivalence_in_runtime_and_app]
-    steps:
-      - name: Some tests failed
-        run: |
-          echo "Some runtime tests failed or were cancelled"
-          exit 1
-
-  update_pr_description:
-    name: Update PR Description
-    if: github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork && github.actor != 'dependabot[bot]'
-    needs: [gcr_build_runtime]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Get short SHA
-        id: short_sha
-        run: echo "SHORT_SHA=$(echo ${{ github.event.pull_request.head.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
-
-      - name: Update PR Description
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
-          SHORT_SHA: ${{ steps.short_sha.outputs.SHORT_SHA }}
-        run: |
-          echo "updating PR description"
-          DOCKER_RUN_COMMAND="docker run -it --rm \
-            -p 3000:3000 \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            --add-host host.docker.internal:host-gateway \
-            -e SANDBOX_RUNTIME_CONTAINER_IMAGE=${{ env.GCR_REGISTRY }}/${{ env.GCR_PROJECT }}/runtime:$SHORT_SHA-nikolaik \
-            --name openhands-app-$SHORT_SHA \
-            ${{ env.GCR_REGISTRY }}/${{ env.GCR_PROJECT }}/openhands:$SHORT_SHA"
-
-          PR_BODY=$(gh pr view $PR_NUMBER --json body --jq .body)
-
-          if echo "$PR_BODY" | grep -q "To run this PR locally, use the following command:"; then
-            UPDATED_PR_BODY=$(echo "${PR_BODY}" | sed -E "s|docker run -it --rm.*|$DOCKER_RUN_COMMAND|")
-          else
-            UPDATED_PR_BODY="${PR_BODY}
-
-          ---
-
-          To run this PR locally, use the following command:
-          \`\`\`
-          $DOCKER_RUN_COMMAND
-          \`\`\`"
-          fi
-
-          echo "updated body: $UPDATED_PR_BODY"
-          gh pr edit $PR_NUMBER --body "$UPDATED_PR_BODY"
-
-  # New step to build and push Docker image
-  build_and_push_docker_image:
-    name: Build and Push Docker Image
-    runs-on: ubuntu-latest
-    steps:
-      - name: Build and push Docker image
-        run: |
-          docker build -t gcr.io/kustodian-dev01/runtime-api:${{ github.sha }} .
-          docker push gcr.io/kustodian-dev01/runtime-api:${{ github.sha }}
+          echo "### Runtime Docker Build Summary (Fork/Dependabot)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Source**: Fork or Dependabot" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: ${{ needs.set-environment.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Base Image**: ${{ matrix.base_image.image }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image Tag**: ${{ needs.set-environment.outputs.image_tag }}-${{ matrix.base_image.tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "🔒 **Runtime Docker image built successfully but not pushed due to security restrictions**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "This is normal for:"
+          echo "- Pull requests from forks"
+          echo "- Dependabot updates"
+          echo "- External contributions"
