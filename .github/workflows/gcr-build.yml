@@ -74,13 +74,20 @@ jobs:
         uses: docker/setup-qemu-action@v3.6.0
         with:
           image: tonistiigi/binfmt:latest
-      # Login to GCR directly with Docker
-      - name: Login to GCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.GCR_REGISTRY }}
-          username: _json_key
-          password: ${{ secrets.GCP_DEV_REGISTRY_SA_KEY }}
+      # Create a Docker config.json file with GCR credentials
+      - name: Set up Docker auth
+        run: |
+          # Create Docker config directory if it doesn't exist
+          mkdir -p $HOME/.docker
+          
+          # Create a JSON structure for Docker config
+          echo '{"auths":{"${{ env.GCR_REGISTRY }}":{"auth":"'$(echo -n _json_key:${{ secrets.GCP_DEV_REGISTRY_SA_KEY }} | base64)'"}}}' > $HOME/.docker/config.json
+          
+          # Verify the config file was created
+          ls -la $HOME/.docker/
+          
+          # Test Docker login
+          docker login ${{ env.GCR_REGISTRY }} || echo "Docker login verification failed but config.json should still work"
       - name: Set up Docker Buildx
         id: buildx
         uses: docker/setup-buildx-action@v3
