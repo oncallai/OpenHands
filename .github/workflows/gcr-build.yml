@@ -9,6 +9,7 @@ on:
   push:
     branches:
       - main
+      - feat-actions
     tags:
       - '*'
   pull_request:
