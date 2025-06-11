@@ -1,13 +1,9 @@
 name: Build and Push Docker Image
 
 on:
-  workflow_run:
-    workflows: ["Check", "Test Runtime API"]
-    types:
-      - completed
+  push:
     branches:
-      - main
-      - "*"
+    - "*"
   push:
     tags:
       - 'v*'
