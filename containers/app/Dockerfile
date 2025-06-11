@@ -32,6 +32,11 @@ FROM base AS openhands-app
 
 WORKDIR /app
 
+# Install PostgreSQL client libraries needed for psycopg2 at runtime
+RUN apt-get update -y \
+    && apt-get install -y libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
 # re-declare for this section
 ARG OPENHANDS_BUILD_VERSION
 
