@@ -8,16 +8,18 @@ push=0
 load=0
 tag_suffix=""
 dry_run=0
+no_cache=0
 
 # Function to display usage information
 usage() {
-    echo "Usage: $0 -i <image_name> [-o <org_name>] [--push] [--load] [-t <tag_suffix>] [--dry]"
+    echo "Usage: $0 -i <image_name> [-o <org_name>] [--push] [--load] [-t <tag_suffix>] [--dry] [--no-cache]"
     echo "  -i: Image name (required)"
     echo "  -o: Organization name"
     echo "  --push: Push the image"
     echo "  --load: Load the image"
     echo "  -t: Tag suffix"
     echo "  --dry: Don't build, only create build-args.json"
+    echo "  --no-cache: Do not use cache when building the image"
     exit 1
 }
 
@@ -30,6 +32,7 @@ while [[ $# -gt 0 ]]; do
         --load) load=1; shift ;;
         -t) tag_suffix="$2"; shift 2 ;;
         --dry) dry_run=1; shift ;;
+        --no-cache) no_cache=1; shift ;;
         *) usage ;;
     esac
 done
@@ -70,9 +73,16 @@ fi
 
 if [[ -n $tag_suffix ]]; then
   cache_tag+="-${tag_suffix}"
-  for i in "${!tags[@]}"; do
-    tags[$i]="${tags[$i]}-$tag_suffix"
-  done
+  
+  # If tags array is empty, add the suffix as a standalone tag
+  if [ ${#tags[@]} -eq 0 ]; then
+    tags+=("$tag_suffix")
+  else
+    # Existing behavior: add suffix to each existing tag
+    for i in "${!tags[@]}"; do
+      tags[$i]="${tags[$i]}-$tag_suffix"
+    done
+  fi
 fi
 
 echo "Tags: ${tags[@]}"
@@ -164,6 +174,11 @@ fi
 
 
 echo "Building for platform(s): $platform"
+
+# Add no-cache flag if requested
+if [[ $no_cache -eq 1 ]]; then
+  args+=" --no-cache"
+fi
 
 docker buildx build \
   $args \

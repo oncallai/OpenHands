@@ -1,8 +1,9 @@
 # NodeJS
 frontend/node_modules
 
-# Configuration (except pyproject.toml)
+# Configuration (except specific files we need)
 *.ini
+!alembic.ini
 *.toml
 !pyproject.toml
 *.yml
@@ -13,6 +14,7 @@ frontend/node_modules
 
 # Hidden files and directories
 .*
+!entrypoint.sh
 __pycache__
 
 # Unneded files and directories
